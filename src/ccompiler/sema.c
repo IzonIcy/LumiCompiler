@@ -59,6 +59,25 @@ typedef struct {
 } CCSemaExpr;
 
 typedef struct {
+    char *name;
+    CCSpan span;
+} CCLabelRecord;
+
+typedef struct {
+    bool ok;
+    long long value;
+} CCConstValue;
+
+typedef struct {
+    long long *case_values;
+    CCSpan *case_spans;
+    size_t case_count;
+    size_t case_capacity;
+    bool has_default;
+    CCSpan default_span;
+} CCSwitchRecord;
+
+typedef struct {
     const CCParseResult *parse_result;
     CCDiagnosticBuffer diagnostics;
     CCScope *scopes;
@@ -70,9 +89,20 @@ typedef struct {
     size_t function_count;
     size_t global_count;
     size_t typedef_count;
+    size_t break_depth;
     size_t loop_depth;
+    size_t switch_depth;
     const CCSemaType *current_return_type;
     const char *current_function_name;
+    CCLabelRecord *defined_labels;
+    size_t defined_label_count;
+    size_t defined_label_capacity;
+    CCLabelRecord *goto_references;
+    size_t goto_reference_count;
+    size_t goto_reference_capacity;
+    CCSwitchRecord *switch_records;
+    size_t switch_record_count;
+    size_t switch_record_capacity;
 } CCSemaContext;
 
 static const CCSemaType cc_invalid_type = {
@@ -212,6 +242,199 @@ static void cc_add_diagnostic(CCSemaContext *context, CCSpan span, const char *f
     context->diagnostics.items[context->diagnostics.count].path = NULL;
     context->diagnostics.items[context->diagnostics.count].message = message;
     context->diagnostics.count++;
+}
+
+static void cc_grow_label_records(CCLabelRecord **items, size_t *capacity) {
+    size_t new_capacity;
+
+    new_capacity = *capacity == 0 ? 8 : *capacity * 2;
+    *items = cc_reallocate_or_die(*items, new_capacity * sizeof(**items));
+    *capacity = new_capacity;
+}
+
+static const CCLabelRecord *cc_find_label_record(const CCLabelRecord *items, size_t count, const char *name) {
+    size_t index;
+
+    if (name == NULL) {
+        return NULL;
+    }
+
+    for (index = 0; index < count; index++) {
+        if (strcmp(items[index].name, name) == 0) {
+            return &items[index];
+        }
+    }
+
+    return NULL;
+}
+
+static void cc_add_defined_label(CCSemaContext *context, const char *name, CCSpan span) {
+    if (name == NULL || name[0] == '\0') {
+        return;
+    }
+
+    if (cc_find_label_record(context->defined_labels, context->defined_label_count, name) != NULL) {
+        const CCLabelRecord *existing;
+
+        existing = cc_find_label_record(context->defined_labels, context->defined_label_count, name);
+        cc_add_diagnostic(
+            context,
+            span,
+            "redefinition of label '%s' (previous definition on line %zu)",
+            name,
+            existing == NULL ? 0 : existing->span.line
+        );
+        return;
+    }
+
+    if (context->defined_label_count == context->defined_label_capacity) {
+        cc_grow_label_records(&context->defined_labels, &context->defined_label_capacity);
+    }
+
+    context->defined_labels[context->defined_label_count].name = cc_duplicate_string(name);
+    context->defined_labels[context->defined_label_count].span = span;
+    context->defined_label_count++;
+}
+
+static void cc_add_goto_reference(CCSemaContext *context, const char *name, CCSpan span) {
+    if (name == NULL || name[0] == '\0') {
+        return;
+    }
+
+    if (context->goto_reference_count == context->goto_reference_capacity) {
+        cc_grow_label_records(&context->goto_references, &context->goto_reference_capacity);
+    }
+
+    context->goto_references[context->goto_reference_count].name = cc_duplicate_string(name);
+    context->goto_references[context->goto_reference_count].span = span;
+    context->goto_reference_count++;
+}
+
+static void cc_clear_label_records(CCLabelRecord **items, size_t *count, size_t *capacity) {
+    size_t index;
+
+    for (index = 0; index < *count; index++) {
+        free((*items)[index].name);
+    }
+
+    free(*items);
+    *items = NULL;
+    *count = 0;
+    *capacity = 0;
+}
+
+static void cc_grow_switch_records(CCSemaContext *context) {
+    size_t new_capacity;
+
+    new_capacity = context->switch_record_capacity == 0 ? 4 : context->switch_record_capacity * 2;
+    context->switch_records = cc_reallocate_or_die(
+        context->switch_records,
+        new_capacity * sizeof(*context->switch_records)
+    );
+    context->switch_record_capacity = new_capacity;
+}
+
+static void cc_grow_switch_cases(CCSwitchRecord *record) {
+    size_t new_capacity;
+
+    new_capacity = record->case_capacity == 0 ? 4 : record->case_capacity * 2;
+    record->case_values = cc_reallocate_or_die(record->case_values, new_capacity * sizeof(*record->case_values));
+    record->case_spans = cc_reallocate_or_die(record->case_spans, new_capacity * sizeof(*record->case_spans));
+    record->case_capacity = new_capacity;
+}
+
+static void cc_push_switch_record(CCSemaContext *context) {
+    if (context->switch_record_count == context->switch_record_capacity) {
+        cc_grow_switch_records(context);
+    }
+
+    memset(&context->switch_records[context->switch_record_count], 0, sizeof(context->switch_records[0]));
+    context->switch_record_count++;
+}
+
+static CCSwitchRecord *cc_current_switch_record(CCSemaContext *context) {
+    if (context->switch_record_count == 0) {
+        return NULL;
+    }
+
+    return &context->switch_records[context->switch_record_count - 1];
+}
+
+static void cc_record_switch_case(CCSemaContext *context, long long value, CCSpan span) {
+    CCSwitchRecord *record;
+    size_t index;
+
+    record = cc_current_switch_record(context);
+    if (record == NULL) {
+        return;
+    }
+
+    for (index = 0; index < record->case_count; index++) {
+        if (record->case_values[index] == value) {
+            cc_add_diagnostic(
+                context,
+                span,
+                "duplicate case value %lld (previous case on line %zu)",
+                value,
+                record->case_spans[index].line
+            );
+            return;
+        }
+    }
+
+    if (record->case_count == record->case_capacity) {
+        cc_grow_switch_cases(record);
+    }
+
+    record->case_values[record->case_count] = value;
+    record->case_spans[record->case_count] = span;
+    record->case_count++;
+}
+
+static void cc_record_switch_default(CCSemaContext *context, CCSpan span) {
+    CCSwitchRecord *record;
+
+    record = cc_current_switch_record(context);
+    if (record == NULL) {
+        return;
+    }
+
+    if (record->has_default) {
+        cc_add_diagnostic(
+            context,
+            span,
+            "duplicate default label (previous default on line %zu)",
+            record->default_span.line
+        );
+        return;
+    }
+
+    record->has_default = true;
+    record->default_span = span;
+}
+
+static void cc_pop_switch_record(CCSemaContext *context) {
+    CCSwitchRecord *record;
+
+    if (context->switch_record_count == 0) {
+        return;
+    }
+
+    context->switch_record_count--;
+    record = &context->switch_records[context->switch_record_count];
+    free(record->case_values);
+    free(record->case_spans);
+    memset(record, 0, sizeof(*record));
+}
+
+static void cc_clear_switch_records(CCSemaContext *context) {
+    while (context->switch_record_count > 0) {
+        cc_pop_switch_record(context);
+    }
+
+    free(context->switch_records);
+    context->switch_records = NULL;
+    context->switch_record_capacity = 0;
 }
 
 static void cc_grow_scopes(CCSemaContext *context) {
@@ -993,6 +1216,293 @@ static const CCSemaType *cc_literal_type(CCSemaContext *context, const char *tex
     return &cc_int_type;
 }
 
+static bool cc_parse_integer_literal(const char *text, long long *value) {
+    char *copy;
+    char *end;
+    size_t length;
+    size_t index;
+
+    if (text == NULL || text[0] == '\0') {
+        return false;
+    }
+
+    length = strlen(text);
+    while (length > 0) {
+        char suffix;
+
+        suffix = text[length - 1];
+        if (suffix == 'u' || suffix == 'U' || suffix == 'l' || suffix == 'L') {
+            length--;
+            continue;
+        }
+        break;
+    }
+
+    copy = cc_reallocate_or_die(NULL, length + 1);
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+
+    if (length > 2 && copy[0] == '0' && (copy[1] == 'b' || copy[1] == 'B')) {
+        long long parsed;
+
+        parsed = 0;
+        for (index = 2; index < length; index++) {
+            if (copy[index] != '0' && copy[index] != '1') {
+                free(copy);
+                return false;
+            }
+            parsed = (parsed << 1) | (copy[index] - '0');
+        }
+        *value = parsed;
+        free(copy);
+        return true;
+    }
+
+    *value = strtoll(copy, &end, 0);
+    {
+        bool ok;
+
+        ok = end != NULL && *end == '\0';
+        free(copy);
+        return ok;
+    }
+}
+
+static bool cc_parse_char_literal(const char *text, long long *value) {
+    const char *quote;
+    unsigned char ch;
+
+    if (text == NULL) {
+        return false;
+    }
+
+    quote = strchr(text, '\'');
+    if (quote == NULL || quote[1] == '\0') {
+        return false;
+    }
+
+    quote++;
+    if (*quote == '\\') {
+        quote++;
+        if (*quote == '0') {
+            *value = 0;
+            return true;
+        }
+        if (*quote == 'n') {
+            *value = '\n';
+            return true;
+        }
+        if (*quote == 'r') {
+            *value = '\r';
+            return true;
+        }
+        if (*quote == 't') {
+            *value = '\t';
+            return true;
+        }
+        if (*quote == '\\') {
+            *value = '\\';
+            return true;
+        }
+        if (*quote == '\'') {
+            *value = '\'';
+            return true;
+        }
+        if (*quote == '"') {
+            *value = '"';
+            return true;
+        }
+        if (*quote == 'x') {
+            char *end;
+
+            *value = strtoll(quote + 1, &end, 16);
+            return end != quote + 1;
+        }
+        if (*quote >= '0' && *quote <= '7') {
+            char buffer[8];
+            size_t index;
+
+            index = 0;
+            while (index < sizeof(buffer) - 1 && quote[index] >= '0' && quote[index] <= '7') {
+                buffer[index] = quote[index];
+                index++;
+            }
+            buffer[index] = '\0';
+            *value = strtoll(buffer, NULL, 8);
+            return true;
+        }
+        *value = (unsigned char)*quote;
+        return true;
+    }
+
+    ch = (unsigned char)*quote;
+    *value = ch;
+    return true;
+}
+
+static CCConstValue cc_invalid_const_value(void) {
+    CCConstValue value;
+
+    value.ok = false;
+    value.value = 0;
+    return value;
+}
+
+static CCConstValue cc_make_const_value(long long value) {
+    CCConstValue result;
+
+    result.ok = true;
+    result.value = value;
+    return result;
+}
+
+static CCConstValue cc_try_fold_integer_constant(const CCAstNode *node);
+
+static CCConstValue cc_try_fold_binary_constant(const CCAstNode *node) {
+    CCConstValue left;
+    CCConstValue right;
+
+    if (node->child_count < 2) {
+        return cc_invalid_const_value();
+    }
+
+    left = cc_try_fold_integer_constant(node->children[0]);
+    right = cc_try_fold_integer_constant(node->children[1]);
+    if (!left.ok || !right.ok || node->text == NULL) {
+        return cc_invalid_const_value();
+    }
+
+    if (strcmp(node->text, "+") == 0) {
+        return cc_make_const_value(left.value + right.value);
+    }
+    if (strcmp(node->text, "-") == 0) {
+        return cc_make_const_value(left.value - right.value);
+    }
+    if (strcmp(node->text, "*") == 0) {
+        return cc_make_const_value(left.value * right.value);
+    }
+    if (strcmp(node->text, "/") == 0 && right.value != 0) {
+        return cc_make_const_value(left.value / right.value);
+    }
+    if (strcmp(node->text, "%") == 0 && right.value != 0) {
+        return cc_make_const_value(left.value % right.value);
+    }
+    if (strcmp(node->text, "<<") == 0) {
+        return cc_make_const_value(left.value << right.value);
+    }
+    if (strcmp(node->text, ">>") == 0) {
+        return cc_make_const_value(left.value >> right.value);
+    }
+    if (strcmp(node->text, "&") == 0) {
+        return cc_make_const_value(left.value & right.value);
+    }
+    if (strcmp(node->text, "|") == 0) {
+        return cc_make_const_value(left.value | right.value);
+    }
+    if (strcmp(node->text, "^") == 0) {
+        return cc_make_const_value(left.value ^ right.value);
+    }
+    if (strcmp(node->text, "&&") == 0) {
+        return cc_make_const_value((left.value != 0) && (right.value != 0));
+    }
+    if (strcmp(node->text, "||") == 0) {
+        return cc_make_const_value((left.value != 0) || (right.value != 0));
+    }
+    if (strcmp(node->text, "==") == 0) {
+        return cc_make_const_value(left.value == right.value);
+    }
+    if (strcmp(node->text, "!=") == 0) {
+        return cc_make_const_value(left.value != right.value);
+    }
+    if (strcmp(node->text, "<") == 0) {
+        return cc_make_const_value(left.value < right.value);
+    }
+    if (strcmp(node->text, "<=") == 0) {
+        return cc_make_const_value(left.value <= right.value);
+    }
+    if (strcmp(node->text, ">") == 0) {
+        return cc_make_const_value(left.value > right.value);
+    }
+    if (strcmp(node->text, ">=") == 0) {
+        return cc_make_const_value(left.value >= right.value);
+    }
+    if (strcmp(node->text, ",") == 0) {
+        return right;
+    }
+
+    return cc_invalid_const_value();
+}
+
+static CCConstValue cc_try_fold_integer_constant(const CCAstNode *node) {
+    long long value;
+
+    if (node == NULL) {
+        return cc_invalid_const_value();
+    }
+
+    switch (node->kind) {
+        case CC_AST_LITERAL:
+            if (node->text == NULL) {
+                return cc_invalid_const_value();
+            }
+            if (cc_parse_integer_literal(node->text, &value) || cc_parse_char_literal(node->text, &value)) {
+                return cc_make_const_value(value);
+            }
+            return cc_invalid_const_value();
+        case CC_AST_UNARY_EXPRESSION: {
+            CCConstValue operand;
+
+            if (node->child_count == 0 || node->text == NULL) {
+                return cc_invalid_const_value();
+            }
+
+            operand = cc_try_fold_integer_constant(node->children[0]);
+            if (!operand.ok) {
+                return operand;
+            }
+
+            if (strcmp(node->text, "plus") == 0) {
+                return cc_make_const_value(+operand.value);
+            }
+            if (strcmp(node->text, "minus") == 0) {
+                return cc_make_const_value(-operand.value);
+            }
+            if (strcmp(node->text, "bang") == 0) {
+                return cc_make_const_value(!operand.value);
+            }
+            if (strcmp(node->text, "tilde") == 0) {
+                return cc_make_const_value(~operand.value);
+            }
+            return cc_invalid_const_value();
+        }
+        case CC_AST_BINARY_EXPRESSION:
+            return cc_try_fold_binary_constant(node);
+        case CC_AST_CONDITIONAL_EXPRESSION: {
+            CCConstValue condition;
+
+            if (node->child_count < 3) {
+                return cc_invalid_const_value();
+            }
+
+            condition = cc_try_fold_integer_constant(node->children[0]);
+            if (!condition.ok) {
+                return condition;
+            }
+
+            return condition.value != 0
+                ? cc_try_fold_integer_constant(node->children[1])
+                : cc_try_fold_integer_constant(node->children[2]);
+        }
+        case CC_AST_CAST_EXPRESSION:
+            if (node->child_count < 2) {
+                return cc_invalid_const_value();
+            }
+            return cc_try_fold_integer_constant(node->children[1]);
+        default:
+            return cc_invalid_const_value();
+    }
+}
+
 static CCSemaExpr cc_analyze_expression(CCSemaContext *context, const CCAstNode *node);
 
 static CCSemaExpr cc_analyze_identifier(CCSemaContext *context, const CCAstNode *node) {
@@ -1332,6 +1842,7 @@ static CCSemaExpr cc_analyze_expression(CCSemaContext *context, const CCAstNode 
 
 static void cc_visit_declaration(CCSemaContext *context, const CCAstNode *declaration, bool file_scope);
 static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statement);
+static bool cc_visit_compound_statement_with_scope(CCSemaContext *context, const CCAstNode *statement, bool push_scope);
 
 static void cc_register_parameter_symbols(CCSemaContext *context, const CCAstNode *parameter_list) {
     size_t index;
@@ -1378,10 +1889,16 @@ static void cc_register_parameter_symbols(CCSemaContext *context, const CCAstNod
 }
 
 static bool cc_visit_compound_statement(CCSemaContext *context, const CCAstNode *statement) {
+    return cc_visit_compound_statement_with_scope(context, statement, true);
+}
+
+static bool cc_visit_compound_statement_with_scope(CCSemaContext *context, const CCAstNode *statement, bool push_scope) {
     size_t index;
     bool returns;
 
-    cc_push_scope(context);
+    if (push_scope) {
+        cc_push_scope(context);
+    }
     returns = false;
 
     for (index = 0; index < statement->child_count; index++) {
@@ -1395,7 +1912,9 @@ static bool cc_visit_compound_statement(CCSemaContext *context, const CCAstNode 
         }
     }
 
-    cc_pop_scope(context);
+    if (push_scope) {
+        cc_pop_scope(context);
+    }
     return returns;
 }
 
@@ -1430,6 +1949,8 @@ static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statemen
         case CC_AST_FOR_STATEMENT: {
             size_t index;
 
+            cc_push_scope(context);
+            context->break_depth++;
             context->loop_depth++;
             for (index = 0; index < statement->child_count; index++) {
                 const CCAstNode *child;
@@ -1446,6 +1967,8 @@ static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statemen
                 }
             }
             context->loop_depth--;
+            context->break_depth--;
+            cc_pop_scope(context);
             return false;
         }
         case CC_AST_WHILE_STATEMENT:
@@ -1457,11 +1980,91 @@ static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statemen
                     cc_add_diagnostic(context, statement->children[0]->span, "while condition must be scalar");
                 }
             }
+            context->break_depth++;
             context->loop_depth++;
             if (statement->child_count > 1) {
                 (void)cc_visit_statement(context, statement->children[1]);
             }
             context->loop_depth--;
+            context->break_depth--;
+            return false;
+        case CC_AST_DO_WHILE_STATEMENT:
+            context->break_depth++;
+            context->loop_depth++;
+            if (statement->child_count > 0) {
+                (void)cc_visit_statement(context, statement->children[0]);
+            }
+            if (statement->child_count > 1) {
+                CCSemaExpr condition;
+
+                condition = cc_analyze_expression(context, statement->children[1]);
+                if (!cc_type_is_scalar(condition.type)) {
+                    cc_add_diagnostic(context, statement->children[1]->span, "do-while condition must be scalar");
+                }
+            }
+            context->loop_depth--;
+            context->break_depth--;
+            return false;
+        case CC_AST_SWITCH_STATEMENT:
+            if (statement->child_count > 0) {
+                CCSemaExpr condition;
+
+                condition = cc_analyze_expression(context, statement->children[0]);
+                if (!cc_type_is_integer(condition.type)) {
+                    cc_add_diagnostic(context, statement->children[0]->span, "switch condition must have integer type");
+                }
+            }
+            context->break_depth++;
+            context->switch_depth++;
+            cc_push_switch_record(context);
+            if (statement->child_count > 1) {
+                (void)cc_visit_statement(context, statement->children[1]);
+            }
+            cc_pop_switch_record(context);
+            context->switch_depth--;
+            context->break_depth--;
+            return false;
+        case CC_AST_CASE_STATEMENT:
+            if (context->switch_depth == 0) {
+                cc_add_diagnostic(context, statement->span, "'case' is only valid inside a switch");
+            }
+            if (statement->child_count > 0) {
+                CCConstValue folded;
+                CCSemaExpr value_expr;
+
+                value_expr = cc_analyze_expression(context, statement->children[0]);
+                if (!cc_type_is_integer(value_expr.type)) {
+                    cc_add_diagnostic(context, statement->children[0]->span, "case label must have integer type");
+                }
+                folded = cc_try_fold_integer_constant(statement->children[0]);
+                if (!folded.ok) {
+                    cc_add_diagnostic(context, statement->children[0]->span, "case label must be an integer constant expression");
+                } else {
+                    cc_record_switch_case(context, folded.value, statement->children[0]->span);
+                }
+            }
+            if (statement->child_count > 1) {
+                return cc_visit_statement(context, statement->children[1]);
+            }
+            return false;
+        case CC_AST_DEFAULT_STATEMENT:
+            if (context->switch_depth == 0) {
+                cc_add_diagnostic(context, statement->span, "'default' is only valid inside a switch");
+            } else {
+                cc_record_switch_default(context, statement->span);
+            }
+            if (statement->child_count > 0) {
+                return cc_visit_statement(context, statement->children[0]);
+            }
+            return false;
+        case CC_AST_GOTO_STATEMENT:
+            cc_add_goto_reference(context, statement->text, statement->span);
+            return false;
+        case CC_AST_LABEL_STATEMENT:
+            cc_add_defined_label(context, statement->text, statement->span);
+            if (statement->child_count > 0) {
+                return cc_visit_statement(context, statement->children[0]);
+            }
             return false;
         case CC_AST_RETURN_STATEMENT:
             if (statement->child_count == 0) {
@@ -1491,8 +2094,8 @@ static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statemen
             }
             return true;
         case CC_AST_BREAK_STATEMENT:
-            if (context->loop_depth == 0) {
-                cc_add_diagnostic(context, statement->span, "'break' is only valid inside a loop");
+            if (context->break_depth == 0) {
+                cc_add_diagnostic(context, statement->span, "'break' is only valid inside a loop or switch");
             }
             return false;
         case CC_AST_CONTINUE_STATEMENT:
@@ -1651,11 +2254,35 @@ static void cc_visit_function_definition(CCSemaContext *context, const CCAstNode
     saved_function_name = context->current_function_name;
     context->current_return_type = function_type->base;
     context->current_function_name = function->text;
+    cc_clear_label_records(&context->defined_labels, &context->defined_label_count, &context->defined_label_capacity);
+    cc_clear_label_records(&context->goto_references, &context->goto_reference_count, &context->goto_reference_capacity);
+    cc_clear_switch_records(context);
 
     cc_push_scope(context);
     parameter_list = cc_find_parameter_list(declarator);
     cc_register_parameter_symbols(context, parameter_list);
-    body_returns = cc_visit_statement(context, body);
+    body_returns = body != NULL && body->kind == CC_AST_COMPOUND_STATEMENT
+        ? cc_visit_compound_statement_with_scope(context, body, false)
+        : cc_visit_statement(context, body);
+
+    for (size_t goto_index = 0; goto_index < context->goto_reference_count; goto_index++) {
+        const CCLabelRecord *target;
+
+        target = cc_find_label_record(
+            context->defined_labels,
+            context->defined_label_count,
+            context->goto_references[goto_index].name
+        );
+        if (target == NULL) {
+            cc_add_diagnostic(
+                context,
+                context->goto_references[goto_index].span,
+                "goto references undefined label '%s'",
+                context->goto_references[goto_index].name
+            );
+        }
+    }
+
     cc_pop_scope(context);
 
     if (context->current_return_type != &cc_void_type && !body_returns) {
@@ -1667,6 +2294,9 @@ static void cc_visit_function_definition(CCSemaContext *context, const CCAstNode
         );
     }
 
+    cc_clear_label_records(&context->defined_labels, &context->defined_label_count, &context->defined_label_capacity);
+    cc_clear_label_records(&context->goto_references, &context->goto_reference_count, &context->goto_reference_capacity);
+    cc_clear_switch_records(context);
     context->current_return_type = saved_return_type;
     context->current_function_name = saved_function_name;
 }
@@ -1705,6 +2335,9 @@ void cc_sema_check_translation_unit(const CCParseResult *parse_result, CCSemaRes
         cc_pop_scope(&context);
     }
     free(context.scopes);
+    cc_clear_label_records(&context.defined_labels, &context.defined_label_count, &context.defined_label_capacity);
+    cc_clear_label_records(&context.goto_references, &context.goto_reference_count, &context.goto_reference_capacity);
+    cc_clear_switch_records(&context);
 
     for (index = 0; index < context.owned_type_count; index++) {
         free((void *)context.owned_types[index]->parameters);

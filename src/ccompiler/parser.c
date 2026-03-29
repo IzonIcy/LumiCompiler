@@ -26,6 +26,9 @@ typedef struct {
     char **typedef_names;
     size_t typedef_count;
     size_t typedef_capacity;
+    size_t *typedef_scope_starts;
+    size_t typedef_scope_count;
+    size_t typedef_scope_capacity;
 } CCParser;
 
 static const char *const cc_ast_kind_names[] = {
@@ -46,6 +49,12 @@ static const char *const cc_ast_kind_names[] = {
     [CC_AST_IF_STATEMENT] = "if_statement",
     [CC_AST_FOR_STATEMENT] = "for_statement",
     [CC_AST_WHILE_STATEMENT] = "while_statement",
+    [CC_AST_DO_WHILE_STATEMENT] = "do_while_statement",
+    [CC_AST_SWITCH_STATEMENT] = "switch_statement",
+    [CC_AST_CASE_STATEMENT] = "case_statement",
+    [CC_AST_DEFAULT_STATEMENT] = "default_statement",
+    [CC_AST_GOTO_STATEMENT] = "goto_statement",
+    [CC_AST_LABEL_STATEMENT] = "label_statement",
     [CC_AST_RETURN_STATEMENT] = "return_statement",
     [CC_AST_BREAK_STATEMENT] = "break_statement",
     [CC_AST_CONTINUE_STATEMENT] = "continue_statement",
@@ -337,6 +346,17 @@ static void cc_grow_typedef_table(CCParser *parser) {
     parser->typedef_capacity = new_capacity;
 }
 
+static void cc_grow_typedef_scope_stack(CCParser *parser) {
+    size_t new_capacity;
+
+    new_capacity = parser->typedef_scope_capacity == 0 ? 8 : parser->typedef_scope_capacity * 2;
+    parser->typedef_scope_starts = cc_reallocate_or_die(
+        parser->typedef_scope_starts,
+        new_capacity * sizeof(*parser->typedef_scope_starts)
+    );
+    parser->typedef_scope_capacity = new_capacity;
+}
+
 static bool cc_typedef_name_exists(const CCParser *parser, const char *name) {
     size_t index;
 
@@ -377,6 +397,28 @@ static void cc_seed_typedef_table(CCParser *parser) {
     }
 }
 
+static void cc_push_typedef_scope(CCParser *parser) {
+    if (parser->typedef_scope_count == parser->typedef_scope_capacity) {
+        cc_grow_typedef_scope_stack(parser);
+    }
+
+    parser->typedef_scope_starts[parser->typedef_scope_count++] = parser->typedef_count;
+}
+
+static void cc_pop_typedef_scope(CCParser *parser) {
+    size_t scope_start;
+
+    if (parser->typedef_scope_count == 0) {
+        return;
+    }
+
+    scope_start = parser->typedef_scope_starts[--parser->typedef_scope_count];
+    while (parser->typedef_count > scope_start) {
+        free(parser->typedef_names[--parser->typedef_count]);
+        parser->typedef_names[parser->typedef_count] = NULL;
+    }
+}
+
 static void cc_free_typedef_table(CCParser *parser) {
     size_t index;
 
@@ -388,6 +430,10 @@ static void cc_free_typedef_table(CCParser *parser) {
     parser->typedef_names = NULL;
     parser->typedef_count = 0;
     parser->typedef_capacity = 0;
+    free(parser->typedef_scope_starts);
+    parser->typedef_scope_starts = NULL;
+    parser->typedef_scope_count = 0;
+    parser->typedef_scope_capacity = 0;
 }
 
 static bool cc_token_is_typedef_name(const CCParser *parser, size_t lookahead) {
@@ -535,10 +581,12 @@ static CCParsedDeclarator cc_parse_declarator(CCParser *parser, bool allow_abstr
 
 static CCAstNode *cc_parse_struct_union_enum_specifier(CCParser *parser) {
     CCSpan start;
+    const char *kind_name;
     char *text;
     size_t brace_depth;
 
     start = cc_current_span(parser);
+    kind_name = cc_token_kind_name(cc_current_token(parser)->kind);
     cc_advance(parser);
 
     if (cc_at(parser, CC_TOKEN_IDENTIFIER)) {
@@ -558,7 +606,7 @@ static CCAstNode *cc_parse_struct_union_enum_specifier(CCParser *parser) {
         }
 
         if (brace_depth > 0) {
-            cc_add_diagnostic(parser, start, "unterminated %s specifier", cc_token_kind_name(cc_peek_token(parser, 0)->kind));
+            cc_add_diagnostic(parser, start, "unterminated %s specifier", kind_name);
         }
     }
 
@@ -573,10 +621,12 @@ static CCAstNode *cc_parse_struct_union_enum_specifier(CCParser *parser) {
 static CCParsedSpecifiers cc_parse_declaration_specifiers(CCParser *parser, bool require_specifier) {
     CCParsedSpecifiers parsed;
     CCSpan start;
+    bool saw_type_specifier;
 
     parsed.node = NULL;
     parsed.is_typedef = false;
     parsed.has_any = false;
+    saw_type_specifier = false;
 
     start = cc_current_span(parser);
     parsed.node = cc_new_ast_node(CC_AST_DECLARATION_SPECIFIERS, start, NULL);
@@ -584,9 +634,15 @@ static CCParsedSpecifiers cc_parse_declaration_specifiers(CCParser *parser, bool
     while (cc_token_begins_declaration_specifier(parser, 0)) {
         const CCToken *token;
         CCAstNode *child;
+        bool is_typedef_name;
 
         parsed.has_any = true;
         token = cc_current_token(parser);
+        is_typedef_name = token->kind == CC_TOKEN_IDENTIFIER && cc_token_is_typedef_name(parser, 0);
+
+        if (is_typedef_name && saw_type_specifier) {
+            break;
+        }
 
         if (token->kind == CC_TOKEN_KW_TYPEDEF) {
             parsed.is_typedef = true;
@@ -597,6 +653,10 @@ static CCParsedSpecifiers cc_parse_declaration_specifiers(CCParser *parser, bool
         } else {
             child = cc_new_token_node(parser, CC_AST_SPECIFIER, token);
             cc_advance(parser);
+        }
+
+        if (is_typedef_name || cc_is_type_specifier_keyword(token->kind)) {
+            saw_type_specifier = true;
         }
 
         cc_ast_add_child(parsed.node, child);
@@ -885,6 +945,7 @@ static CCAstNode *cc_parse_compound_statement(CCParser *parser) {
     start = cc_current_span(parser);
     compound = cc_new_ast_node(CC_AST_COMPOUND_STATEMENT, start, NULL);
     cc_expect(parser, CC_TOKEN_LBRACE, "expected '{' to start compound statement");
+    cc_push_typedef_scope(parser);
 
     while (!cc_at(parser, CC_TOKEN_RBRACE) && !cc_at(parser, CC_TOKEN_EOF)) {
         CCAstNode *child;
@@ -904,6 +965,7 @@ static CCAstNode *cc_parse_compound_statement(CCParser *parser) {
     }
 
     cc_expect(parser, CC_TOKEN_RBRACE, "expected '}' after compound statement");
+    cc_pop_typedef_scope(parser);
     compound->span = cc_span_from_start_to_previous(parser, start);
     return compound;
 }
@@ -1492,6 +1554,99 @@ static CCAstNode *cc_parse_while_statement(CCParser *parser) {
     return node;
 }
 
+static CCAstNode *cc_parse_do_while_statement(CCParser *parser) {
+    CCAstNode *node;
+    CCSpan start;
+
+    start = cc_current_span(parser);
+    node = cc_new_ast_node(CC_AST_DO_WHILE_STATEMENT, start, NULL);
+    cc_expect(parser, CC_TOKEN_KW_DO, "expected 'do'");
+    cc_ast_add_child(node, cc_parse_statement(parser));
+    cc_expect(parser, CC_TOKEN_KW_WHILE, "expected 'while' after do-while body");
+    cc_expect(parser, CC_TOKEN_LPAREN, "expected '(' after 'while'");
+    cc_ast_add_child(node, cc_parse_expression(parser));
+    cc_expect(parser, CC_TOKEN_RPAREN, "expected ')' after do-while condition");
+    cc_expect(parser, CC_TOKEN_SEMICOLON, "expected ';' after do-while statement");
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_switch_statement(CCParser *parser) {
+    CCAstNode *node;
+    CCSpan start;
+
+    start = cc_current_span(parser);
+    node = cc_new_ast_node(CC_AST_SWITCH_STATEMENT, start, NULL);
+    cc_expect(parser, CC_TOKEN_KW_SWITCH, "expected 'switch'");
+    cc_expect(parser, CC_TOKEN_LPAREN, "expected '(' after 'switch'");
+    cc_ast_add_child(node, cc_parse_expression(parser));
+    cc_expect(parser, CC_TOKEN_RPAREN, "expected ')' after switch condition");
+    cc_ast_add_child(node, cc_parse_statement(parser));
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_case_statement(CCParser *parser) {
+    CCAstNode *node;
+    CCSpan start;
+
+    start = cc_current_span(parser);
+    node = cc_new_ast_node(CC_AST_CASE_STATEMENT, start, NULL);
+    cc_expect(parser, CC_TOKEN_KW_CASE, "expected 'case'");
+    cc_ast_add_child(node, cc_parse_expression(parser));
+    cc_expect(parser, CC_TOKEN_COLON, "expected ':' after case value");
+    cc_ast_add_child(node, cc_parse_statement(parser));
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_default_statement(CCParser *parser) {
+    CCAstNode *node;
+    CCSpan start;
+
+    start = cc_current_span(parser);
+    node = cc_new_ast_node(CC_AST_DEFAULT_STATEMENT, start, NULL);
+    cc_expect(parser, CC_TOKEN_KW_DEFAULT, "expected 'default'");
+    cc_expect(parser, CC_TOKEN_COLON, "expected ':' after default");
+    cc_ast_add_child(node, cc_parse_statement(parser));
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_goto_statement(CCParser *parser) {
+    CCAstNode *node;
+    CCSpan start;
+
+    start = cc_current_span(parser);
+    node = cc_new_ast_node(CC_AST_GOTO_STATEMENT, start, NULL);
+    cc_expect(parser, CC_TOKEN_KW_GOTO, "expected 'goto'");
+    if (cc_at(parser, CC_TOKEN_IDENTIFIER)) {
+        node->text = cc_token_text(parser, cc_current_token(parser));
+        cc_advance(parser);
+    } else {
+        cc_expected(parser, "expected label name after 'goto'");
+    }
+    cc_expect(parser, CC_TOKEN_SEMICOLON, "expected ';' after goto statement");
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_labeled_statement(CCParser *parser) {
+    const CCToken *label_token;
+    CCAstNode *node;
+    CCSpan start;
+
+    label_token = cc_current_token(parser);
+    start = label_token->span;
+    node = cc_new_ast_node(CC_AST_LABEL_STATEMENT, start, NULL);
+    node->text = cc_token_text(parser, label_token);
+    cc_advance(parser);
+    cc_expect(parser, CC_TOKEN_COLON, "expected ':' after label");
+    cc_ast_add_child(node, cc_parse_statement(parser));
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
 static CCAstNode *cc_parse_for_statement(CCParser *parser) {
     CCAstNode *node;
     CCSpan start;
@@ -1548,6 +1703,10 @@ static CCAstNode *cc_parse_expression_statement(CCParser *parser) {
 }
 
 static CCAstNode *cc_parse_statement(CCParser *parser) {
+    if (cc_current_token(parser)->kind == CC_TOKEN_IDENTIFIER && cc_peek_token(parser, 1)->kind == CC_TOKEN_COLON) {
+        return cc_parse_labeled_statement(parser);
+    }
+
     switch (cc_current_token(parser)->kind) {
         case CC_TOKEN_LBRACE:
             return cc_parse_compound_statement(parser);
@@ -1557,6 +1716,16 @@ static CCAstNode *cc_parse_statement(CCParser *parser) {
             return cc_parse_for_statement(parser);
         case CC_TOKEN_KW_WHILE:
             return cc_parse_while_statement(parser);
+        case CC_TOKEN_KW_DO:
+            return cc_parse_do_while_statement(parser);
+        case CC_TOKEN_KW_SWITCH:
+            return cc_parse_switch_statement(parser);
+        case CC_TOKEN_KW_CASE:
+            return cc_parse_case_statement(parser);
+        case CC_TOKEN_KW_DEFAULT:
+            return cc_parse_default_statement(parser);
+        case CC_TOKEN_KW_GOTO:
+            return cc_parse_goto_statement(parser);
         case CC_TOKEN_KW_RETURN:
             return cc_parse_return_statement(parser);
         case CC_TOKEN_KW_BREAK:
@@ -1698,6 +1867,7 @@ void cc_parse_translation_unit(const CCLexResult *lex_result, CCParseResult *res
 
     memset(&parser, 0, sizeof(parser));
     parser.lex_result = lex_result;
+    cc_push_typedef_scope(&parser);
     cc_seed_typedef_table(&parser);
 
     root = cc_new_ast_node(CC_AST_TRANSLATION_UNIT, lex_result->tokens.items[0].span, NULL);

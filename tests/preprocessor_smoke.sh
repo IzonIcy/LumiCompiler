@@ -66,6 +66,13 @@ int value2 = ADD_ONE(7);
 #endif
 EOF
 
+cat > "$TMP_DIR/preprocess_angle.c" <<'EOF'
+#include <defs.h>
+#if defined VALUE
+int value3 = VALUE;
+#endif
+EOF
+
 cat > "$TMP_DIR/preprocess_missing_include.c" <<'EOF'
 #include "missing.h"
 int value = 0;
@@ -75,6 +82,9 @@ expect_success "$TMP_DIR/preprocess_ok.c"
 expect_output_contains "int value = 41;"
 expect_output_contains "int value2 = ((7) + 1);"
 expect_output_not_contains "#define"
+
+expect_success "$TMP_DIR/preprocess_angle.c"
+expect_output_contains "int value3 = 41;"
 
 expect_failure "$TMP_DIR/preprocess_missing_include.c"
 expect_output_contains "unable to open include 'missing.h'"

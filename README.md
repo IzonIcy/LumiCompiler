@@ -30,10 +30,12 @@ The lexer recognizes:
 
 The preprocessor currently supports:
 
-- quoted `#include "file.h"`
+- quoted includes like `#include "file.h"`
+- local angle-bracket includes like `#include <file.h>`
 - object-like and function-like `#define`
 - `#undef`
 - `#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, and `#endif`
+- `defined(NAME)` and `defined NAME` expressions in `#if` and `#elif`
 - macro expansion and token pasting with `##`
 
 ### Parser
@@ -44,7 +46,9 @@ The parser handles a meaningful C subset, including:
 - pointer and array declarators
 - parameter lists
 - compound statements
-- `if`, `for`, `while`, `return`, `break`, and `continue`
+- labels and `goto`
+- `if`, `for`, `while`, `do ... while`, and `switch`
+- `case`, `default`, `return`, `break`, and `continue`
 - unary, binary, conditional, cast, call, member, and subscript expressions
 
 ### Semantic Analysis
@@ -57,12 +61,16 @@ The semantic pass performs:
 - undeclared identifier checks
 - function-call arity checks
 - assignment and return-type validation
-- `break` and `continue` validation
+- `break`, `continue`, `case`, and `default` validation
+- label resolution for `goto`
+- duplicate label, `case`, and `default` detection
 - simple non-void return-path checks
 
 ### Code Generation
 
-The backend emits a readable lowered IR for the supported subset. It is not
+The backend emits a readable lowered IR for the supported subset. It now lowers
+looping, branching, switch dispatch, labels, and gotos, and it does small
+constant-folding wins for integer expressions before emission. It is still not
 native assembly yet, but it gives the project a real codegen stage and a solid
 bridge to a future machine backend.
 
@@ -132,7 +140,7 @@ Code generation:
 ```text
 func main(void) -> int
 entry:
-  t0 = call mix(7u, 0.25)
+  t0 = call mix(7, 0.25)
   t1 = cast int, t0
   ret t1
 endfunc
@@ -221,11 +229,10 @@ C-Compiler/
 This project still intentionally stops short of being a full ISO C compiler.
 Some notable limits:
 
-- the preprocessor currently focuses on quoted includes and common macro flows
+- the preprocessor still focuses on local include resolution and common macro flows
 - semantic typing is intentionally lightweight
 - the backend emits textual IR, not object code or machine assembly
-- advanced C constructs like full struct layout, switch lowering, and function
-  pointers are not complete yet
+- advanced C constructs like full struct layout and function pointers are not complete yet
 
 ## Next Steps
 

@@ -73,6 +73,103 @@ int main(void) {
 }
 EOF
 
+cat > "$TMP_DIR/switch_and_goto_ok.c" <<'EOF'
+int main(void) {
+    int value = 1;
+start:
+    do {
+        switch (value) {
+            case 0:
+                value = value + 1;
+                break;
+            case 1:
+                goto done;
+            default:
+                value = value + 2;
+        }
+    } while (value < 3);
+done:
+    return value;
+}
+EOF
+
+cat > "$TMP_DIR/case_outside_switch.c" <<'EOF'
+int main(void) {
+    case 1:
+        return 0;
+}
+EOF
+
+cat > "$TMP_DIR/default_outside_switch.c" <<'EOF'
+int main(void) {
+    default:
+        return 0;
+}
+EOF
+
+cat > "$TMP_DIR/undefined_label.c" <<'EOF'
+int main(void) {
+    goto missing;
+}
+EOF
+
+cat > "$TMP_DIR/duplicate_case.c" <<'EOF'
+int main(void) {
+    switch (1) {
+        case 1:
+            return 0;
+        case 1:
+            return 1;
+        default:
+            return 2;
+    }
+}
+EOF
+
+cat > "$TMP_DIR/duplicate_default.c" <<'EOF'
+int main(void) {
+    switch (1) {
+        default:
+            return 0;
+        default:
+            return 1;
+    }
+}
+EOF
+
+cat > "$TMP_DIR/for_scope_leak.c" <<'EOF'
+int main(void) {
+    for (int i = 0; i < 1; ++i) {
+    }
+    return i;
+}
+EOF
+
+cat > "$TMP_DIR/for_scope_shadow_ok.c" <<'EOF'
+int main(void) {
+    int i = 7;
+    for (int i = 0; i < 1; ++i) {
+    }
+    return i;
+}
+EOF
+
+cat > "$TMP_DIR/parameter_redeclaration.c" <<'EOF'
+int f(int x) {
+    int x = 1;
+    return x;
+}
+EOF
+
+cat > "$TMP_DIR/typedef_name_as_local_identifier.c" <<'EOF'
+typedef int T;
+
+int main(void) {
+    int T = 0;
+    return T;
+}
+EOF
+
 expect_success "$ROOT_DIR/examples/feature_showcase.c"
 expect_output_contains "semantic analysis succeeded"
 expect_output_contains "functions: 2"
@@ -83,10 +180,40 @@ expect_failure "$TMP_DIR/undeclared_value.c"
 expect_output_contains "use of undeclared identifier 'missing'"
 
 expect_failure "$TMP_DIR/break_outside_loop.c"
-expect_output_contains "'break' is only valid inside a loop"
+expect_output_contains "'break' is only valid inside a loop or switch"
 
 expect_failure "$TMP_DIR/missing_return.c"
 expect_output_contains "may exit without returning a value"
 
 expect_failure "$TMP_DIR/wrong_arg_count.c"
 expect_output_contains "function call expected 2 arguments but received 1"
+
+expect_success "$TMP_DIR/switch_and_goto_ok.c"
+expect_output_contains "semantic analysis succeeded"
+
+expect_failure "$TMP_DIR/case_outside_switch.c"
+expect_output_contains "'case' is only valid inside a switch"
+
+expect_failure "$TMP_DIR/default_outside_switch.c"
+expect_output_contains "'default' is only valid inside a switch"
+
+expect_failure "$TMP_DIR/undefined_label.c"
+expect_output_contains "goto references undefined label 'missing'"
+
+expect_failure "$TMP_DIR/duplicate_case.c"
+expect_output_contains "duplicate case value 1"
+
+expect_failure "$TMP_DIR/duplicate_default.c"
+expect_output_contains "duplicate default label"
+
+expect_failure "$TMP_DIR/for_scope_leak.c"
+expect_output_contains "use of undeclared identifier 'i'"
+
+expect_success "$TMP_DIR/for_scope_shadow_ok.c"
+expect_output_contains "semantic analysis succeeded"
+
+expect_failure "$TMP_DIR/parameter_redeclaration.c"
+expect_output_contains "redeclaration of 'x' in the same scope"
+
+expect_success "$TMP_DIR/typedef_name_as_local_identifier.c"
+expect_output_contains "semantic analysis succeeded"

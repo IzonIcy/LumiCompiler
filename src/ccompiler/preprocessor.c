@@ -362,9 +362,30 @@ static bool cc_parse_identifier(
     return true;
 }
 
-static bool cc_resolve_include_path(const char *including_path, const char *include_name, char resolved_path[CC_PATH_BUFFER_SIZE]) {
+static bool cc_resolve_include_path(
+    const char *including_path,
+    const char *include_name,
+    bool search_local_directory,
+    char resolved_path[CC_PATH_BUFFER_SIZE]
+) {
     const char *slash;
     size_t prefix_length;
+
+    if (include_name == NULL || include_name[0] == '\0') {
+        return false;
+    }
+
+    if (include_name[0] == '/') {
+        if (strlen(include_name) + 1 > CC_PATH_BUFFER_SIZE) {
+            return false;
+        }
+        strcpy(resolved_path, include_name);
+        return true;
+    }
+
+    if (!search_local_directory) {
+        return false;
+    }
 
     slash = strrchr(including_path, '/');
     if (slash == NULL) {
@@ -382,18 +403,25 @@ static bool cc_resolve_include_path(const char *including_path, const char *incl
     return true;
 }
 
-static bool cc_parse_include_name(const char *text, size_t length, size_t *index, char **include_name) {
+static bool cc_parse_include_name(
+    const char *text,
+    size_t length,
+    size_t *index,
+    char **include_name
+) {
+    char delimiter;
     size_t start;
 
     *index = cc_skip_spaces(text, length, *index);
-    if (*index >= length || text[*index] != '"') {
+    if (*index >= length || (text[*index] != '"' && text[*index] != '<')) {
         return false;
     }
 
+    delimiter = text[*index];
     (*index)++;
     start = *index;
 
-    while (*index < length && text[*index] != '"') {
+    while (*index < length && text[*index] != (delimiter == '<' ? '>' : '"')) {
         (*index)++;
     }
 
@@ -973,10 +1001,21 @@ static bool cc_simple_if_condition(CCPreprocessor *preprocessor, const char *tex
             if (cc_parse_identifier(text, length, &index, &identifier)) {
                 bool defined;
 
+                index = cc_skip_spaces(text, length, index);
+                if (index >= length || text[index] != ')') {
+                    free(identifier);
+                    return false;
+                }
                 defined = cc_find_macro(preprocessor, identifier) != NULL;
                 free(identifier);
                 return defined;
             }
+        } else if (cc_parse_identifier(text, length, &index, &identifier)) {
+            bool defined;
+
+            defined = cc_find_macro(preprocessor, identifier) != NULL;
+            free(identifier);
+            return defined;
         }
     }
 
@@ -1042,8 +1081,8 @@ static void cc_process_directive(
         if (active) {
             include_name = NULL;
             if (!cc_parse_include_name(line_text, line_length, &index, &include_name)) {
-                cc_add_diagnostic(preprocessor, path, line_offset, line_number, 1, 1, "expected quoted include path");
-            } else if (!cc_resolve_include_path(path, include_name, resolved_path) || access(resolved_path, R_OK) != 0) {
+                cc_add_diagnostic(preprocessor, path, line_offset, line_number, 1, 1, "expected include path in quotes or angle brackets");
+            } else if (!cc_resolve_include_path(path, include_name, true, resolved_path) || access(resolved_path, R_OK) != 0) {
                 cc_add_diagnostic(
                     preprocessor,
                     path,

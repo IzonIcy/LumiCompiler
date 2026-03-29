@@ -60,6 +60,39 @@ int main(void) {
 }
 EOF
 
+cat > "$TMP_DIR/typedef_scope_error.c" <<'EOF'
+int main(void) {
+    typedef int T;
+    return 0;
+}
+
+T value;
+EOF
+
+cat > "$TMP_DIR/typedef_name_as_local_identifier.c" <<'EOF'
+typedef int T;
+
+int main(void) {
+    int T = 0;
+    return T;
+}
+EOF
+
+cat > "$TMP_DIR/control_flow_parse.c" <<'EOF'
+int main(void) {
+entry:
+    do {
+        switch (1) {
+            case 0:
+                break;
+            default:
+                goto entry;
+        }
+    } while (0);
+    return 0;
+}
+EOF
+
 expect_parse_success "$ROOT_DIR/examples/feature_showcase.c"
 expect_output_contains "translation_unit"
 expect_output_contains "preprocessor_line: #define GLUE(a, b) a ## b"
@@ -74,5 +107,20 @@ expect_parse_success "$TMP_DIR/typedef_casts.c"
 expect_output_contains "function_definition: main"
 expect_output_contains "cast_expression"
 
+expect_parse_success "$TMP_DIR/control_flow_parse.c"
+expect_output_contains "do_while_statement"
+expect_output_contains "switch_statement"
+expect_output_contains "case_statement"
+expect_output_contains "default_statement"
+expect_output_contains "goto_statement: entry"
+expect_output_contains "label_statement: entry"
+
+expect_parse_success "$TMP_DIR/typedef_name_as_local_identifier.c"
+expect_output_contains "declarator: T"
+expect_output_contains "return_statement"
+
 expect_parse_failure "$TMP_DIR/parser_error.c"
 expect_output_contains "expected ')' after if condition"
+
+expect_parse_failure "$TMP_DIR/typedef_scope_error.c"
+expect_output_contains "expected declaration specifier"
