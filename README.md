@@ -1,6 +1,6 @@
 # C-Compiler
 
-`C-Compiler` is a hand-built C compiler project in C with a real multi-stage
+C-Compiler is a hand-built C compiler project in C with a real multi-stage
 pipeline:
 
 - lexical analysis
@@ -20,23 +20,23 @@ lower non-trivial C programs with useful diagnostics.
 The lexer recognizes:
 
 - identifiers and C keywords
-- integer literals, including decimal, octal, hexadecimal, and `0b`-style
+- integer literals, including decimal, octal, hexadecimal, and 0b-style
   extensions
-- floating literals, including hexadecimal floats like `0x1.fp3`
-- string and character literals with prefixes like `u8`, `u`, `U`, and `L`
+- floating literals, including hexadecimal floats like 0x1.fp3
+- string and character literals with prefixes like u8, u, U, and L
 - comments, digraphs, and multi-character punctuators
 
 ### Preprocessor
 
 The preprocessor currently supports:
 
-- quoted includes like `#include "file.h"`
-- local angle-bracket includes like `#include <file.h>`
-- object-like and function-like `#define`
-- `#undef`
-- `#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, and `#endif`
-- `defined(NAME)` and `defined NAME` expressions in `#if` and `#elif`
-- macro expansion and token pasting with `##`
+- quoted includes like #include "file.h"
+- local angle-bracket includes like #include <file.h>
+- object-like and function-like #define
+- #undef
+- #if, #ifdef, #ifndef, #elif, #else, and #endif
+- defined(NAME) and defined NAME expressions in #if and #elif
+- macro expansion and token pasting with ##
 
 ### Parser
 
@@ -46,9 +46,9 @@ The parser handles a meaningful C subset, including:
 - pointer and array declarators
 - parameter lists
 - compound statements
-- labels and `goto`
-- `if`, `for`, `while`, `do ... while`, and `switch`
-- `case`, `default`, `return`, `break`, and `continue`
+- labels and goto
+- if, for, while, do ... while, and switch
+- case, default, return, break, and continue
 - unary, binary, conditional, cast, call, member, and subscript expressions
 
 ### Semantic Analysis
@@ -61,9 +61,9 @@ The semantic pass performs:
 - undeclared identifier checks
 - function-call arity checks
 - assignment and return-type validation
-- `break`, `continue`, `case`, and `default` validation
-- label resolution for `goto`
-- duplicate label, `case`, and `default` detection
+- break, continue, case, and default validation
+- label resolution for goto
+- duplicate label, case, and default detection
 - simple non-void return-path checks
 
 ### Code Generation
@@ -78,124 +78,124 @@ bridge to a future machine backend.
 
 Build the compiler:
 
-```bash
+bash
 make
-```
+
 
 The binary is written to:
 
-```text
+text
 build/bin/ccompiler
-```
+
 
 Run the raw lexer:
 
-```bash
+bash
 ./build/bin/ccompiler lex examples/feature_showcase.c
-```
 
-You can also omit `lex`:
 
-```bash
+You can also omit lex:
+
+bash
 ./build/bin/ccompiler examples/feature_showcase.c
-```
+
 
 Run preprocessing:
 
-```bash
+bash
 ./build/bin/ccompiler preprocess examples/feature_showcase.c
-```
+
 
 Print the raw AST:
 
-```bash
+bash
 ./build/bin/ccompiler parse examples/feature_showcase.c
-```
+
 
 Run semantic analysis on the preprocessed translation unit:
 
-```bash
+bash
 ./build/bin/ccompiler check examples/feature_showcase.c
-```
+
 
 Emit lowered IR:
 
-```bash
+bash
 ./build/bin/ccompiler codegen examples/feature_showcase.c
-```
+
 
 ## Example Output
 
 Semantic analysis:
 
-```text
+text
 semantic analysis succeeded
 functions: 2
 globals: 0
 typedefs: 1
-```
+
 
 Code generation:
 
-```text
+text
 func main(void) -> int
 entry:
   t0 = call mix(7, 0.25)
   t1 = cast int, t0
   ret t1
 endfunc
-```
+
 
 ## Installation
 
 ### Requirements
 
-- a C11-compatible compiler such as `clang` or `gcc`
-- `make`
-- `clang` if you want to run `make analyze`
+- a C11-compatible compiler such as clang or gcc
+- make
+- clang if you want to run make analyze
 
 ### Build
 
-```bash
+bash
 git clone <your-repo-url>
 cd C-Compiler
 make
-```
+
 
 ### Optional PATH Install
 
-```bash
+bash
 install -m 755 build/bin/ccompiler /usr/local/bin/ccompiler
-```
 
-If your system requires elevated permissions for `/usr/local/bin`, use `sudo`.
+
+If your system requires elevated permissions for /usr/local/bin, use sudo.
 
 ## Verification
 
 Run the smoke-test suite:
 
-```bash
+bash
 make test
-```
+
 
 Run static analysis:
 
-```bash
+bash
 make analyze
-```
+
 
 Run both:
 
-```bash
+bash
 make verify
-```
+
 
 The repository also includes a GitHub Actions workflow at
-`.github/workflows/ci.yml` that runs `make verify` on pushes and pull requests.
+.github/workflows/ci.yml that runs make verify on pushes and pull requests.
 
 ## Project Layout
 
-```text
+text
 C-Compiler/
 ├── Makefile
 ├── README.md
@@ -222,7 +222,7 @@ C-Compiler/
     ├── parser_smoke.sh
     ├── preprocessor_smoke.sh
     └── sema_smoke.sh
-```
+
 
 ## Limits
 
