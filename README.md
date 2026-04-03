@@ -242,7 +242,3 @@ Strong next upgrades would be:
 - source mapping through preprocessing and includes
 - native assembly or object-file emission
 - optimization passes over the generated IR
-
-## License
-
-Add a license file if you want to distribute or publish the project.
