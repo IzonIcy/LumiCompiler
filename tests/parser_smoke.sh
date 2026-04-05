@@ -3,7 +3,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-BINARY="$ROOT_DIR/build/bin/ccompiler"
+BINARY="$ROOT_DIR/build/bin/C-Compiler"
 TMP_DIR=$(mktemp -d)
 LAST_OUTPUT="$TMP_DIR/last-output.txt"
 

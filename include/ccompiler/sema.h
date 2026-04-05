@@ -1,9 +1,9 @@
-#ifndef CCOMPILER_SEMA_H
-#define CCOMPILER_SEMA_H
+#ifndef C-Compiler_SEMA_H
+#define C-Compiler_SEMA_H
 
 #include <stddef.h>
 
-#include "ccompiler/parser.h"
+#include "C-Compiler/parser.h"
 
 typedef struct {
     CCDiagnosticBuffer diagnostics;
