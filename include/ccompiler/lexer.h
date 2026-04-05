@@ -1,10 +1,10 @@
-#ifndef C-Compiler_LEXER_H
-#define C-Compiler_LEXER_H
+#ifndef CCOMPILER_LEXER_H
+#define CCOMPILER_LEXER_H
 
 #include <stddef.h>
 #include <stdio.h>
 
-#include "C-Compiler/token.h"
+#include "ccompiler/token.h"
 
 typedef struct {
     const char *path;

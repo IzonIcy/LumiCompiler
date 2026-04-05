@@ -1,9 +1,9 @@
-#ifndef C-Compiler_PREPROCESSOR_H
-#define C-Compiler_PREPROCESSOR_H
+#ifndef CCOMPILER_PREPROCESSOR_H
+#define CCOMPILER_PREPROCESSOR_H
 
 #include <stddef.h>
 
-#include "C-Compiler/lexer.h"
+#include "ccompiler/lexer.h"
 
 typedef struct {
     CCSourceView source;

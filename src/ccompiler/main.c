@@ -1,8 +1,8 @@
-#include "C-Compiler/codegen.h"
-#include "C-Compiler/lexer.h"
-#include "C-Compiler/parser.h"
-#include "C-Compiler/preprocessor.h"
-#include "C-Compiler/sema.h"
+#include "ccompiler/codegen.h"
+#include "ccompiler/lexer.h"
+#include "ccompiler/parser.h"
+#include "ccompiler/preprocessor.h"
+#include "ccompiler/sema.h"
 
 #include <errno.h>
 #include <stdbool.h>

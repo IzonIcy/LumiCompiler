@@ -1,4 +1,4 @@
-#include "C-Compiler/token.h"
+#include "ccompiler/token.h"
 
 static const char *const cc_token_names[CC_TOKEN_KIND_COUNT] = {
     [CC_TOKEN_EOF] = "eof",

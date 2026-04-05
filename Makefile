@@ -4,7 +4,7 @@ CPPFLAGS ?= -Iinclude
 ANALYZER ?= clang
 
 TARGET := build/bin/C-Compiler
-SOURCES := $(wildcard src/C-Compiler/*.c)
+SOURCES := $(wildcard src/ccompiler/*.c)
 OBJECTS := $(patsubst src/%.c,build/obj/%.o,$(SOURCES))
 
 .PHONY: all clean test analyze verify
@@ -27,7 +27,7 @@ test: $(TARGET)
 	sh tests/codegen_smoke.sh
 
 analyze:
-	$(ANALYZER) --analyze $(CPPFLAGS) $(CFLAGS) src/C-Compiler/*.c
+	$(ANALYZER) --analyze $(CPPFLAGS) $(CFLAGS) src/ccompiler/*.c
 
 verify: test analyze
 

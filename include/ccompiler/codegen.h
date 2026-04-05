@@ -1,7 +1,7 @@
-#ifndef C-Compiler_CODEGEN_H
-#define C-Compiler_CODEGEN_H
+#ifndef CCOMPILER_CODEGEN_H
+#define CCOMPILER_CODEGEN_H
 
-#include "C-Compiler/parser.h"
+#include "ccompiler/parser.h"
 
 typedef struct {
     char *text;

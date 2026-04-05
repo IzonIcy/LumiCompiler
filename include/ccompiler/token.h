@@ -1,5 +1,5 @@
-#ifndef C-Compiler_TOKEN_H
-#define C-Compiler_TOKEN_H
+#ifndef CCOMPILER_TOKEN_H
+#define CCOMPILER_TOKEN_H
 
 #include <stdbool.h>
 #include <stddef.h>

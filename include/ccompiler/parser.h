@@ -1,10 +1,10 @@
-#ifndef C-Compiler_PARSER_H
-#define C-Compiler_PARSER_H
+#ifndef CCOMPILER_PARSER_H
+#define CCOMPILER_PARSER_H
 
 #include <stddef.h>
 #include <stdio.h>
 
-#include "C-Compiler/lexer.h"
+#include "ccompiler/lexer.h"
 
 typedef enum {
     CC_AST_TRANSLATION_UNIT,
