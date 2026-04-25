@@ -13,17 +13,34 @@
 #define CC_LEXEME_PREVIEW_LIMIT 48
 
 typedef struct {
+    bool dump_tokens;
+    bool dump_ast;
+    bool dump_ir;
+    bool dump_ast_json;
+    bool warnings_enabled;
+} CCCompilerOptions;
+
+typedef struct {
     char *data;
     size_t length;
 } CCLoadedFile;
 
+static CCCompilerOptions g_options;
+
 static void cc_print_usage(FILE *out, const char *program_name) {
-    fprintf(out, "usage: %s lex <path>\n", program_name);
-    fprintf(out, "       %s preprocess <path>\n", program_name);
-    fprintf(out, "       %s parse <path>\n", program_name);
-    fprintf(out, "       %s check <path>\n", program_name);
-    fprintf(out, "       %s codegen <path>\n", program_name);
-    fprintf(out, "       %s <path>\n", program_name);
+    fprintf(out, "usage: %s [options] lex <path>\n", program_name);
+    fprintf(out, "       %s [options] preprocess <path>\n", program_name);
+    fprintf(out, "       %s [options] parse <path>\n", program_name);
+    fprintf(out, "       %s [options] check <path>\n", program_name);
+    fprintf(out, "       %s [options] codegen <path>\n", program_name);
+    fprintf(out, "       %s [options] <path>\n", program_name);
+    fprintf(out, "\noptions:\n");
+    fprintf(out, "  --dump-tokens     print token stream after lexing\n");
+    fprintf(out, "  --dump-ast        print AST after parsing\n");
+    fprintf(out, "  --dump-ast-json   print AST as JSON after parsing\n");
+    fprintf(out, "  --dump-ir         print IR after code generation\n");
+    fprintf(out, "  -Wall             enable all warnings\n");
+    fprintf(out, "  -h, --help        show this help message\n");
 }
 
 static bool cc_append_fragment(char *buffer, size_t capacity, size_t *length, const char *fragment) {
@@ -45,6 +62,44 @@ static bool cc_append_fragment(char *buffer, size_t capacity, size_t *length, co
     *length += index;
     buffer[*length] = '\0';
     return true;
+}
+
+static int cc_parse_options(int argc, char **argv, CCCompilerOptions *options, int *command_arg_index, int *file_arg_index, int *num_positional) {
+    int i;
+
+    memset(options, 0, sizeof(*options));
+    *command_arg_index = -1;
+    *file_arg_index = -1;
+    *num_positional = 0;
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dump-tokens") == 0) {
+            options->dump_tokens = true;
+        } else if (strcmp(argv[i], "--dump-ast") == 0) {
+            options->dump_ast = true;
+        } else if (strcmp(argv[i], "--dump-ast-json") == 0) {
+            options->dump_ast_json = true;
+        } else if (strcmp(argv[i], "--dump-ir") == 0) {
+            options->dump_ir = true;
+        } else if (strcmp(argv[i], "-Wall") == 0) {
+            options->warnings_enabled = true;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            return 0;
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "error: unrecognized option '%s'\n", argv[i]);
+            cc_print_usage(stderr, argv[0]);
+            return -1;
+        } else {
+            if (*command_arg_index == -1) {
+                *command_arg_index = i;
+            } else if (*file_arg_index == -1) {
+                *file_arg_index = i;
+            }
+            (*num_positional)++;
+        }
+    }
+
+    return 1;
 }
 
 static void cc_format_lexeme_preview(const CCSourceView *source, CCSpan span, char *buffer, size_t capacity) {
@@ -200,6 +255,106 @@ static void cc_print_tokens(const CCLexResult *result) {
     }
 }
 
+static void cc_escape_json_string(const char *src, char *dest, size_t dest_size) {
+    size_t j = 0;
+    size_t i;
+
+    for (i = 0; src[i] != '\0' && j < dest_size - 2; i++) {
+        char c = src[i];
+        if (c == '"' || c == '\\') {
+            if (j + 2 >= dest_size) break;
+            dest[j++] = '\\';
+            dest[j++] = c;
+        } else if (c == '\n') {
+            if (j + 2 >= dest_size) break;
+            dest[j++] = '\\';
+            dest[j++] = 'n';
+        } else if (c == '\r') {
+            if (j + 2 >= dest_size) break;
+            dest[j++] = '\\';
+            dest[j++] = 'r';
+        } else if (c == '\t') {
+            if (j + 2 >= dest_size) break;
+            dest[j++] = '\\';
+            dest[j++] = 't';
+        } else if (c >= 32 && c <= 126) {
+            dest[j++] = c;
+        }
+    }
+    dest[j] = '\0';
+}
+
+static void cc_ast_print_json(FILE *out, const CCAstNode *node, unsigned indent) {
+    size_t i;
+    const char *indent_str = "  ";
+
+    if (node == NULL) {
+        return;
+    }
+
+    for (i = 0; i < indent; i++) {
+        fputs(indent_str, out);
+    }
+
+    fputs("{\n", out);
+
+    for (i = 0; i < indent + 1; i++) {
+        fputs(indent_str, out);
+    }
+    {
+        char kind_escaped[512];
+        cc_escape_json_string(cc_ast_kind_name(node->kind), kind_escaped, sizeof(kind_escaped));
+        fprintf(out, "\"kind\": \"%s\",\n", kind_escaped);
+    }
+
+    for (i = 0; i < indent + 1; i++) {
+        fputs(indent_str, out);
+    }
+    fprintf(out, "\"span\": {\"line\": %zu, \"column\": %zu, \"offset\": %zu, \"length\": %zu}",
+            node->span.line, node->span.column, node->span.offset, node->span.length);
+
+    if (node->text != NULL) {
+        fputc(',', out);
+        fputc('\n', out);
+        for (i = 0; i < indent + 1; i++) {
+            fputs(indent_str, out);
+        }
+        {
+            char text_escaped[512];
+            cc_escape_json_string(node->text, text_escaped, sizeof(text_escaped));
+            fprintf(out, "\"text\": \"%s\"", text_escaped);
+        }
+    }
+
+    if (node->child_count > 0) {
+        fputc(',', out);
+        fputc('\n', out);
+        for (i = 0; i < indent + 1; i++) {
+            fputs(indent_str, out);
+        }
+        fprintf(out, "\"children\": [\n");
+
+        for (i = 0; i < node->child_count; i++) {
+            cc_ast_print_json(out, node->children[i], indent + 2);
+            if (i < node->child_count - 1) {
+                fputc(',', out);
+            }
+            fputc('\n', out);
+        }
+
+        for (i = 0; i < indent + 1; i++) {
+            fputs(indent_str, out);
+        }
+        fputs("]", out);
+    }
+
+    fputc('\n', out);
+    for (i = 0; i < indent; i++) {
+        fputs(indent_str, out);
+    }
+    fputs("}", out);
+}
+
 static int cc_run_lex(const char *path) {
     CCLoadedFile loaded_file;
     CCLexResult result;
@@ -218,7 +373,9 @@ static int cc_run_lex(const char *path) {
         &result
     );
 
-    cc_print_tokens(&result);
+    if (g_options.dump_tokens) {
+        cc_print_tokens(&result);
+    }
 
     if (result.diagnostics.count > 0) {
         fflush(stdout);
@@ -264,7 +421,12 @@ static int cc_run_parse(const char *path) {
         cc_print_diagnostics(stderr, &parse_result.source, parse_result.diagnostics.items, parse_result.diagnostics.count);
         exit_code = 1;
     } else {
-        cc_ast_print(stdout, parse_result.translation_unit, 0);
+        if (g_options.dump_ast_json) {
+            cc_ast_print_json(stdout, parse_result.translation_unit, 0);
+            fputc('\n', stdout);
+        } else if (g_options.dump_ast) {
+            cc_ast_print(stdout, parse_result.translation_unit, 0);
+        }
         exit_code = 0;
     }
 
@@ -337,14 +499,29 @@ static int cc_run_preprocess(const char *path) {
     return exit_code;
 }
 
+static size_t cc_count_errors(const CCDiagnostic *diagnostics, size_t count) {
+    size_t i;
+    size_t error_count = 0;
+
+    for (i = 0; i < count; i++) {
+        if (diagnostics[i].severity == CC_DIAGNOSTIC_ERROR) {
+            error_count++;
+        }
+    }
+
+    return error_count;
+}
+
 static int cc_run_check(const char *path) {
     CCPreprocessResult preprocess_result;
     CCLexResult lex_result;
     CCParseResult parse_result;
     CCSemaResult sema_result;
+    CCSemaOptions sema_options;
     int exit_code;
 
     memset(&sema_result, 0, sizeof(sema_result));
+    sema_options.warnings_enabled = g_options.warnings_enabled;
 
     if (!cc_prepare_processed_translation_unit(path, &preprocess_result, &lex_result, &parse_result)) {
         cc_parse_result_free(&parse_result);
@@ -353,10 +530,21 @@ static int cc_run_check(const char *path) {
         return 1;
     }
 
-    cc_sema_check_translation_unit(&parse_result, &sema_result);
+    cc_sema_check_translation_unit(&parse_result, &sema_options, &sema_result);
     if (sema_result.diagnostics.count > 0) {
+        size_t error_count;
+        
         cc_print_diagnostics(stderr, &parse_result.source, sema_result.diagnostics.items, sema_result.diagnostics.count);
-        exit_code = 1;
+        error_count = cc_count_errors(sema_result.diagnostics.items, sema_result.diagnostics.count);
+        if (error_count > 0) {
+            exit_code = 1;
+        } else {
+            printf("semantic analysis succeeded\n");
+            printf("functions: %zu\n", sema_result.function_count);
+            printf("globals: %zu\n", sema_result.global_count);
+            printf("typedefs: %zu\n", sema_result.typedef_count);
+            exit_code = 0;
+        }
     } else {
         printf("semantic analysis succeeded\n");
         printf("functions: %zu\n", sema_result.function_count);
@@ -377,11 +565,13 @@ static int cc_run_codegen(const char *path) {
     CCLexResult lex_result;
     CCParseResult parse_result;
     CCSemaResult sema_result;
+    CCSemaOptions sema_options;
     CCCodegenResult codegen_result;
     int exit_code;
 
     memset(&sema_result, 0, sizeof(sema_result));
     memset(&codegen_result, 0, sizeof(codegen_result));
+    sema_options.warnings_enabled = g_options.warnings_enabled;
 
     if (!cc_prepare_processed_translation_unit(path, &preprocess_result, &lex_result, &parse_result)) {
         cc_parse_result_free(&parse_result);
@@ -390,11 +580,16 @@ static int cc_run_codegen(const char *path) {
         return 1;
     }
 
-    cc_sema_check_translation_unit(&parse_result, &sema_result);
+    cc_sema_check_translation_unit(&parse_result, &sema_options, &sema_result);
     if (sema_result.diagnostics.count > 0) {
+        size_t error_count;
+        
         cc_print_diagnostics(stderr, &parse_result.source, sema_result.diagnostics.items, sema_result.diagnostics.count);
-        exit_code = 1;
-        goto cleanup;
+        error_count = cc_count_errors(sema_result.diagnostics.items, sema_result.diagnostics.count);
+        if (error_count > 0) {
+            exit_code = 1;
+            goto cleanup;
+        }
     }
 
     cc_codegen_translation_unit(&parse_result, &codegen_result);
@@ -402,7 +597,9 @@ static int cc_run_codegen(const char *path) {
         cc_print_diagnostics(stderr, &parse_result.source, codegen_result.diagnostics.items, codegen_result.diagnostics.count);
         exit_code = 1;
     } else {
-        fputs(codegen_result.text, stdout);
+        if (g_options.dump_ir) {
+            fputs(codegen_result.text, stdout);
+        }
         exit_code = 0;
     }
 
@@ -416,33 +613,61 @@ cleanup:
 }
 
 int main(int argc, char **argv) {
-    if (argc == 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    CCCompilerOptions options;
+    int command_arg_index;
+    int file_arg_index;
+    int num_positional;
+    const char *command;
+    const char *filepath;
+    int parse_result;
+
+    parse_result = cc_parse_options(argc, argv, &options, &command_arg_index, &file_arg_index, &num_positional);
+    if (parse_result < 0) {
+        return 1;
+    }
+    if (parse_result == 0) {
         cc_print_usage(stdout, argv[0]);
         return 0;
     }
 
-    if (argc == 2) {
-        return cc_run_lex(argv[1]);
+    if (num_positional == 0) {
+        cc_print_usage(stderr, argv[0]);
+        return 1;
     }
 
-    if (argc == 3 && strcmp(argv[1], "lex") == 0) {
-        return cc_run_lex(argv[2]);
+    g_options = options;
+
+    if (num_positional == 1) {
+        filepath = argv[command_arg_index];
+        return cc_run_lex(filepath);
     }
 
-    if (argc == 3 && strcmp(argv[1], "preprocess") == 0) {
-        return cc_run_preprocess(argv[2]);
+    if (num_positional == 2) {
+        command = argv[command_arg_index];
+        filepath = argv[file_arg_index];
+    } else {
+        cc_print_usage(stderr, argv[0]);
+        return 1;
     }
 
-    if (argc == 3 && strcmp(argv[1], "parse") == 0) {
-        return cc_run_parse(argv[2]);
+    if (strcmp(command, "lex") == 0) {
+        return cc_run_lex(filepath);
     }
 
-    if (argc == 3 && strcmp(argv[1], "check") == 0) {
-        return cc_run_check(argv[2]);
+    if (strcmp(command, "preprocess") == 0) {
+        return cc_run_preprocess(filepath);
     }
 
-    if (argc == 3 && strcmp(argv[1], "codegen") == 0) {
-        return cc_run_codegen(argv[2]);
+    if (strcmp(command, "parse") == 0) {
+        return cc_run_parse(filepath);
+    }
+
+    if (strcmp(command, "check") == 0) {
+        return cc_run_check(filepath);
+    }
+
+    if (strcmp(command, "codegen") == 0) {
+        return cc_run_codegen(filepath);
     }
 
     cc_print_usage(stderr, argv[0]);

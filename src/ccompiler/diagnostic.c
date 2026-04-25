@@ -75,10 +75,11 @@ void cc_print_diagnostics(
 
         fprintf(
             out,
-            "%s:%zu:%zu: error: %s\n",
+            "%s:%zu:%zu: %s: %s\n",
             diagnostic_path,
             diagnostic->span.line,
             diagnostic->span.column,
+            diagnostic->severity == CC_DIAGNOSTIC_WARNING ? "warning" : "error",
             diagnostic->message
         );
 

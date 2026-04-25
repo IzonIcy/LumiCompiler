@@ -35,6 +35,12 @@ typedef struct {
 } CCConditionalFrame;
 
 typedef struct {
+    char **paths;
+    size_t count;
+    size_t capacity;
+} CCPragmaOnceSet;
+
+typedef struct {
     CCDiagnosticBuffer diagnostics;
     CCMacro *macros;
     size_t macro_count;
@@ -42,6 +48,7 @@ typedef struct {
     CCConditionalFrame *conditionals;
     size_t conditional_count;
     size_t conditional_capacity;
+    CCPragmaOnceSet pragma_once_files;
     bool in_block_comment;
 } CCPreprocessor;
 
@@ -183,7 +190,60 @@ static void cc_add_diagnostic(
     preprocessor->diagnostics.items[preprocessor->diagnostics.count].span.length = length == 0 ? 1 : length;
     preprocessor->diagnostics.items[preprocessor->diagnostics.count].path = path == NULL ? NULL : cc_duplicate_string(path);
     preprocessor->diagnostics.items[preprocessor->diagnostics.count].message = message;
+    preprocessor->diagnostics.items[preprocessor->diagnostics.count].severity = CC_DIAGNOSTIC_ERROR;
     preprocessor->diagnostics.count++;
+}
+
+static bool cc_pragma_once_contains(const CCPragmaOnceSet *set, const char *path) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (strcmp(set->paths[i], path) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void cc_pragma_once_add(CCPragmaOnceSet *set, const char *path) {
+    if (cc_pragma_once_contains(set, path)) {
+        return;
+    }
+
+    if (set->count == set->capacity) {
+        size_t new_capacity = set->capacity == 0 ? 8 : set->capacity * 2;
+        set->paths = cc_reallocate_or_die(set->paths, new_capacity * sizeof(*set->paths));
+        set->capacity = new_capacity;
+    }
+
+    set->paths[set->count] = cc_duplicate_string(path);
+    set->count++;
+}
+
+static void cc_pragma_once_free(CCPragmaOnceSet *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        free(set->paths[i]);
+    }
+
+    free(set->paths);
+    set->paths = NULL;
+    set->count = 0;
+    set->capacity = 0;
+}
+
+static char *cc_get_canonical_path(const char *path) {
+    char *canonical;
+    char resolved[CC_PATH_BUFFER_SIZE];
+
+    if (realpath(path, resolved) == NULL) {
+        return cc_duplicate_string(path);
+    }
+
+    canonical = cc_duplicate_string(resolved);
+    return canonical;
 }
 
 static bool cc_load_file(const char *path, CCLoadedFile *file) {
@@ -1215,6 +1275,26 @@ static void cc_process_directive(
         return;
     }
 
+    if (strcmp(directive, "pragma") == 0) {
+        char *pragma_name;
+
+        if (active) {
+            pragma_name = NULL;
+            index = cc_skip_spaces(line_text, line_length, index);
+            if (cc_parse_identifier(line_text, line_length, &index, &pragma_name)) {
+                if (strcmp(pragma_name, "once") == 0) {
+                    char *canonical_path = cc_get_canonical_path(path);
+                    cc_pragma_once_add(&preprocessor->pragma_once_files, canonical_path);
+                    free(canonical_path);
+                }
+            }
+            free(pragma_name);
+        }
+        cc_builder_append_char(output, '\n');
+        free(directive);
+        return;
+    }
+
     if (active) {
         cc_add_diagnostic(
             preprocessor,
@@ -1235,6 +1315,14 @@ static void cc_preprocess_path(CCPreprocessor *preprocessor, const char *path, C
     CCLoadedFile file;
     size_t index;
     size_t line_number;
+    char *canonical_path;
+
+    canonical_path = cc_get_canonical_path(path);
+    if (cc_pragma_once_contains(&preprocessor->pragma_once_files, canonical_path)) {
+        free(canonical_path);
+        return;
+    }
+    free(canonical_path);
 
     if (!cc_load_file(path, &file)) {
         cc_add_diagnostic(preprocessor, path, 0, 1, 1, 1, "unable to open source file");
@@ -1300,6 +1388,7 @@ void cc_preprocess_file(const char *path, CCPreprocessResult *result) {
     }
     free(preprocessor.macros);
     free(preprocessor.conditionals);
+    cc_pragma_once_free(&preprocessor.pragma_once_files);
 }
 
 void cc_preprocess_result_free(CCPreprocessResult *result) {

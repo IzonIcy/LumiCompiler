@@ -1,6 +1,7 @@
 #ifndef CCOMPILER_SEMA_H
 #define CCOMPILER_SEMA_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "ccompiler/parser.h"
@@ -12,7 +13,15 @@ typedef struct {
     size_t typedef_count;
 } CCSemaResult;
 
-void cc_sema_check_translation_unit(const CCParseResult *parse_result, CCSemaResult *result);
+typedef struct {
+    bool warnings_enabled;
+} CCSemaOptions;
+
+void cc_sema_check_translation_unit(
+    const CCParseResult *parse_result,
+    const CCSemaOptions *options,
+    CCSemaResult *result
+);
 void cc_sema_result_free(CCSemaResult *result);
 
 #endif

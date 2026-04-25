@@ -261,6 +261,7 @@ static void cc_add_diagnostic(CCParser *parser, CCSpan span, const char *format,
     parser->diagnostics.items[parser->diagnostics.count].span = span;
     parser->diagnostics.items[parser->diagnostics.count].path = NULL;
     parser->diagnostics.items[parser->diagnostics.count].message = message;
+    parser->diagnostics.items[parser->diagnostics.count].severity = CC_DIAGNOSTIC_ERROR;
     parser->diagnostics.count++;
 }
 

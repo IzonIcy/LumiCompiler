@@ -170,6 +170,47 @@ int main(void) {
 }
 EOF
 
+cat > "$TMP_DIR/incompatible_pointer_assignment.c" <<'EOF'
+int main(void) {
+    int *ip;
+    double *dp;
+    ip = dp;
+    return 0;
+}
+EOF
+
+cat > "$TMP_DIR/incompatible_pointer_argument.c" <<'EOF'
+int takes_int_ptr(int *p) {
+    return *p;
+}
+
+int main(void) {
+    double value = 0.0;
+    double *dp = &value;
+    return takes_int_ptr(dp);
+}
+EOF
+
+cat > "$TMP_DIR/function_to_int_cast.c" <<'EOF'
+int f(void) {
+    return 1;
+}
+
+int main(void) {
+    return (int)f;
+}
+EOF
+
+cat > "$TMP_DIR/void_pointer_roundtrip.c" <<'EOF'
+int main(void) {
+    int value = 7;
+    int *ip = &value;
+    void *vp = ip;
+    ip = vp;
+    return *ip;
+}
+EOF
+
 expect_success "$ROOT_DIR/examples/feature_showcase.c"
 expect_output_contains "semantic analysis succeeded"
 expect_output_contains "functions: 2"
@@ -216,4 +257,16 @@ expect_failure "$TMP_DIR/parameter_redeclaration.c"
 expect_output_contains "redeclaration of 'x' in the same scope"
 
 expect_success "$TMP_DIR/typedef_name_as_local_identifier.c"
+expect_output_contains "semantic analysis succeeded"
+
+expect_failure "$TMP_DIR/incompatible_pointer_assignment.c"
+expect_output_contains "cannot assign value of type pointer to pointer"
+
+expect_failure "$TMP_DIR/incompatible_pointer_argument.c"
+expect_output_contains "argument 1 has incompatible type"
+
+expect_failure "$TMP_DIR/function_to_int_cast.c"
+expect_output_contains "invalid cast from function to int"
+
+expect_success "$TMP_DIR/void_pointer_roundtrip.c"
 expect_output_contains "semantic analysis succeeded"

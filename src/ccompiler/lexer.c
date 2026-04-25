@@ -291,6 +291,7 @@ static void cc_add_diagnostic(CCLexer *lexer, CCSpan span, const char *format, .
     lexer->diagnostics.items[lexer->diagnostics.count].span = span;
     lexer->diagnostics.items[lexer->diagnostics.count].path = NULL;
     lexer->diagnostics.items[lexer->diagnostics.count].message = message;
+    lexer->diagnostics.items[lexer->diagnostics.count].severity = CC_DIAGNOSTIC_ERROR;
     lexer->diagnostics.count++;
 }
 

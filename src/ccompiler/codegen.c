@@ -198,6 +198,7 @@ static void cc_add_diagnostic(CCCodegenContext *context, CCSpan span, const char
     context->diagnostics.items[context->diagnostics.count].span = span;
     context->diagnostics.items[context->diagnostics.count].path = NULL;
     context->diagnostics.items[context->diagnostics.count].message = message;
+    context->diagnostics.items[context->diagnostics.count].severity = CC_DIAGNOSTIC_ERROR;
     context->diagnostics.count++;
 }
 

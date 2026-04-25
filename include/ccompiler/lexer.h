@@ -12,15 +12,22 @@ typedef struct {
     size_t length;
 } CCSourceView;
 
+typedef enum {
+    CC_DIAGNOSTIC_ERROR,
+    CC_DIAGNOSTIC_WARNING
+} CCDiagnosticSeverity;
+
 typedef struct {
     CCSpan span;
     char *path;
     char *message;
+    CCDiagnosticSeverity severity;
 } CCDiagnostic;
 
 typedef struct {
     CCToken *items;
     size_t count;
+    /// @brief 
     size_t capacity;
 } CCTokenBuffer;
 

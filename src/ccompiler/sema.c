@@ -79,6 +79,7 @@ typedef struct {
 
 typedef struct {
     const CCParseResult *parse_result;
+    const CCSemaOptions *options;
     CCDiagnosticBuffer diagnostics;
     CCScope *scopes;
     size_t scope_count;
@@ -169,6 +170,8 @@ static const CCSemaType cc_double_type = {
     .variadic = false,
 };
 
+static bool cc_type_equal(const CCSemaType *left, const CCSemaType *right);
+
 static void *cc_reallocate_or_die(void *memory, size_t size) {
     void *result;
 
@@ -241,6 +244,53 @@ static void cc_add_diagnostic(CCSemaContext *context, CCSpan span, const char *f
     context->diagnostics.items[context->diagnostics.count].span = span;
     context->diagnostics.items[context->diagnostics.count].path = NULL;
     context->diagnostics.items[context->diagnostics.count].message = message;
+    context->diagnostics.items[context->diagnostics.count].severity = CC_DIAGNOSTIC_ERROR;
+    context->diagnostics.count++;
+}
+
+static void cc_add_warning(CCSemaContext *context, CCSpan span, const char *format, ...) {
+    char small_buffer[256];
+    char *message;
+    int needed;
+    va_list args;
+    va_list copy;
+
+    if (!context->options->warnings_enabled) {
+        return;
+    }
+
+    if (context->diagnostics.count == context->diagnostics.capacity) {
+        cc_grow_diagnostic_buffer(&context->diagnostics);
+    }
+
+    va_start(args, format);
+    va_copy(copy, args);
+    needed = vsnprintf(small_buffer, sizeof(small_buffer), format, args);
+    va_end(args);
+
+    if (needed < 0) {
+        va_end(copy);
+        message = cc_duplicate_string("diagnostic formatting failure");
+    } else if ((size_t)needed < sizeof(small_buffer)) {
+        va_end(copy);
+        message = cc_duplicate_string(small_buffer);
+    } else {
+        size_t length;
+
+        length = (size_t)needed + 1;
+        message = cc_reallocate_or_die(NULL, length);
+        vsnprintf(message, length, format, copy);
+        va_end(copy);
+    }
+
+    if (span.length == 0 && span.offset < context->parse_result->source.length) {
+        span.length = 1;
+    }
+
+    context->diagnostics.items[context->diagnostics.count].span = span;
+    context->diagnostics.items[context->diagnostics.count].path = NULL;
+    context->diagnostics.items[context->diagnostics.count].message = message;
+    context->diagnostics.items[context->diagnostics.count].severity = CC_DIAGNOSTIC_WARNING;
     context->diagnostics.count++;
 }
 
@@ -539,8 +589,79 @@ static const CCSemaType *cc_take_owned_type(CCSemaContext *context, CCSemaType *
     return type;
 }
 
+static const CCSemaType *cc_find_pointer_type(const CCSemaContext *context, const CCSemaType *base) {
+    size_t index;
+
+    for (index = 0; index < context->owned_type_count; index++) {
+        const CCSemaType *candidate;
+
+        candidate = context->owned_types[index];
+        if (candidate->kind == CC_SEMA_TYPE_POINTER && candidate->base == base) {
+            return candidate;
+        }
+    }
+
+    return NULL;
+}
+
+static bool cc_parameter_lists_equal(
+    const CCSemaType *const *left_parameters,
+    size_t left_count,
+    const CCSemaType *const *right_parameters,
+    size_t right_count
+) {
+    size_t index;
+
+    if (left_count != right_count) {
+        return false;
+    }
+
+    for (index = 0; index < left_count; index++) {
+        if (!cc_type_equal(left_parameters[index], right_parameters[index])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static const CCSemaType *cc_find_function_type(
+    const CCSemaContext *context,
+    const CCSemaType *return_type,
+    const CCSemaType *const *parameters,
+    size_t parameter_count,
+    bool variadic
+) {
+    size_t index;
+
+    for (index = 0; index < context->owned_type_count; index++) {
+        const CCSemaType *candidate;
+
+        candidate = context->owned_types[index];
+        if (candidate->kind != CC_SEMA_TYPE_FUNCTION) {
+            continue;
+        }
+
+        if (!cc_type_equal(candidate->base, return_type)
+            || candidate->variadic != variadic
+            || !cc_parameter_lists_equal(candidate->parameters, candidate->parameter_count, parameters, parameter_count)) {
+            continue;
+        }
+
+        return candidate;
+    }
+
+    return NULL;
+}
+
 static const CCSemaType *cc_new_pointer_type(CCSemaContext *context, const CCSemaType *base) {
     CCSemaType *type;
+    const CCSemaType *existing;
+
+    existing = cc_find_pointer_type(context, base);
+    if (existing != NULL) {
+        return existing;
+    }
 
     type = cc_reallocate_or_die(NULL, sizeof(*type));
     type->kind = CC_SEMA_TYPE_POINTER;
@@ -560,6 +681,12 @@ static const CCSemaType *cc_new_function_type(
 ) {
     CCSemaType *type;
     const CCSemaType **owned_parameters;
+    const CCSemaType *existing;
+
+    existing = cc_find_function_type(context, return_type, parameters, parameter_count, variadic);
+    if (existing != NULL) {
+        return existing;
+    }
 
     type = cc_reallocate_or_die(NULL, sizeof(*type));
     type->kind = CC_SEMA_TYPE_FUNCTION;
@@ -659,6 +786,10 @@ static bool cc_type_is_pointer(const CCSemaType *type) {
     return type != NULL && type->kind == CC_SEMA_TYPE_POINTER;
 }
 
+static bool cc_type_is_void(const CCSemaType *type) {
+    return type == &cc_void_type;
+}
+
 static bool cc_type_is_scalar(const CCSemaType *type) {
     return cc_type_is_numeric(type) || cc_type_is_pointer(type);
 }
@@ -680,6 +811,9 @@ static const CCSemaType *cc_arithmetic_result_type(const CCSemaType *left, const
 }
 
 static bool cc_types_assignable(const CCSemaType *target, const CCSemaType *value) {
+    const CCSemaType *target_base;
+    const CCSemaType *value_base;
+
     if (target == NULL || value == NULL || target == &cc_invalid_type || value == &cc_invalid_type) {
         return true;
     }
@@ -693,6 +827,38 @@ static bool cc_types_assignable(const CCSemaType *target, const CCSemaType *valu
     }
 
     if (cc_type_is_pointer(target) && cc_type_is_pointer(value)) {
+        target_base = target->base;
+        value_base = value->base;
+        if (target_base == NULL || value_base == NULL) {
+            return false;
+        }
+
+        if (target_base->kind == CC_SEMA_TYPE_FUNCTION || value_base->kind == CC_SEMA_TYPE_FUNCTION) {
+            return cc_type_equal(target_base, value_base);
+        }
+
+        return cc_type_equal(target_base, value_base)
+            || cc_type_is_void(target_base)
+            || cc_type_is_void(value_base);
+    }
+
+    return false;
+}
+
+static bool cc_types_castable(const CCSemaType *target, const CCSemaType *value) {
+    if (target == NULL || value == NULL || target == &cc_invalid_type || value == &cc_invalid_type) {
+        return true;
+    }
+
+    if (cc_type_equal(target, value)) {
+        return true;
+    }
+
+    if (cc_type_is_void(target)) {
+        return true;
+    }
+
+    if (cc_type_is_scalar(target) && cc_type_is_scalar(value)) {
         return true;
     }
 
@@ -953,7 +1119,12 @@ static const CCSemaType *cc_type_from_parameter(CCSemaContext *context, const CC
     }
 
     base_type = cc_type_from_specifiers(context, specifiers);
-    return cc_apply_declarator_type(context, declarator, base_type);
+    base_type = cc_apply_declarator_type(context, declarator, base_type);
+    if (base_type->kind == CC_SEMA_TYPE_FUNCTION) {
+        return cc_new_pointer_type(context, base_type);
+    }
+
+    return base_type;
 }
 
 static const CCAstNode *cc_declaration_specifiers(const CCAstNode *declaration) {
@@ -1831,7 +2002,25 @@ static CCSemaExpr cc_analyze_expression(CCSemaContext *context, const CCAstNode 
             }
 
             cast_type = cc_type_from_parameter(context, node->children[0]);
-            (void)cc_analyze_expression(context, node->children[1]);
+            {
+                CCSemaExpr value;
+
+                value = cc_analyze_expression(context, node->children[1]);
+                if (!value.ok) {
+                    return cc_invalid_expr();
+                }
+
+                if (!cc_types_castable(cast_type, value.type)) {
+                    cc_add_diagnostic(
+                        context,
+                        node->span,
+                        "invalid cast from %s to %s",
+                        cc_type_name(value.type),
+                        cc_type_name(cast_type)
+                    );
+                    return cc_invalid_expr();
+                }
+            }
             return cc_make_expr(cast_type, false, false);
         case CC_AST_ARGUMENT_LIST:
             return cc_invalid_expr();
@@ -2090,6 +2279,20 @@ static bool cc_visit_statement(CCSemaContext *context, const CCAstNode *statemen
                         cc_type_name(value.type),
                         cc_type_name(context->current_return_type)
                     );
+                } else if (cc_types_assignable(context->current_return_type, value.type)) {
+                    if ((context->current_return_type->kind == CC_SEMA_TYPE_FLOAT || 
+                         context->current_return_type->kind == CC_SEMA_TYPE_DOUBLE) &&
+                        (value.type->kind == CC_SEMA_TYPE_INT || 
+                         value.type->kind == CC_SEMA_TYPE_LONG ||
+                         value.type->kind == CC_SEMA_TYPE_CHAR)) {
+                        cc_add_warning(
+                            context,
+                            statement->children[0]->span,
+                            "implicit conversion from %s to %s",
+                            cc_type_name(value.type),
+                            cc_type_name(context->current_return_type)
+                        );
+                    }
                 }
             }
             return true;
@@ -2301,13 +2504,18 @@ static void cc_visit_function_definition(CCSemaContext *context, const CCAstNode
     context->current_function_name = saved_function_name;
 }
 
-void cc_sema_check_translation_unit(const CCParseResult *parse_result, CCSemaResult *result) {
+void cc_sema_check_translation_unit(
+    const CCParseResult *parse_result,
+    const CCSemaOptions *options,
+    CCSemaResult *result
+) {
     CCSemaContext context;
     size_t index;
 
     memset(&context, 0, sizeof(context));
     memset(result, 0, sizeof(*result));
     context.parse_result = parse_result;
+    context.options = options;
     context.current_return_type = &cc_void_type;
     cc_push_scope(&context);
 
