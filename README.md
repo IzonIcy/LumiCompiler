@@ -189,37 +189,6 @@ make verify
 The repository also includes a GitHub Actions workflow at
 .github/workflows/ci.yml that runs make verify on pushes and pull requests.
 
-## Project Layout
-
-text
-C-Compiler/
-├── Makefile
-├── README.md
-├── examples/
-├── include/C-Compiler/
-│   ├── codegen.h
-│   ├── lexer.h
-│   ├── parser.h
-│   ├── preprocessor.h
-│   ├── sema.h
-│   └── token.h
-├── src/C-Compiler/
-│   ├── codegen.c
-│   ├── diagnostic.c
-│   ├── lexer.c
-│   ├── main.c
-│   ├── parser.c
-│   ├── preprocessor.c
-│   ├── sema.c
-│   └── token.c
-└── tests/
-    ├── codegen_smoke.sh
-    ├── lexer_smoke.sh
-    ├── parser_smoke.sh
-    ├── preprocessor_smoke.sh
-    └── sema_smoke.sh
-
-
 ## Limits
 
 This project still intentionally stops short of being a full ISO C compiler.
