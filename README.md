@@ -1,6 +1,6 @@
-# C-Compiler
+# Lumi-Compiler
 
-C-Compiler is a hand-built C compiler project in C with a real multi-stage
+Lumi Compiler is a hand-built C compiler project in C with a real multi-stage
 pipeline:
 
 - lexical analysis
