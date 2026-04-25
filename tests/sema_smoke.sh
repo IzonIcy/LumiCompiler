@@ -211,6 +211,76 @@ int main(void) {
 }
 EOF
 
+cat > "$TMP_DIR/struct_union_ok.c" <<'EOF'
+struct Pair {
+    char c;
+    int x;
+    long y;
+};
+
+union Number {
+    int i;
+    long l;
+};
+
+int main(void) {
+    struct Pair p;
+    struct Pair *pp = &p;
+    union Number n;
+    p.x = 3;
+    pp->y = 4;
+    n.l = pp->y;
+    return p.x + n.i;
+}
+EOF
+
+cat > "$TMP_DIR/member_dot_non_record.c" <<'EOF'
+int main(void) {
+    int value = 0;
+    return value.x;
+}
+EOF
+
+cat > "$TMP_DIR/member_arrow_non_pointer.c" <<'EOF'
+struct S {
+    int x;
+};
+
+int main(void) {
+    struct S s;
+    return s->x;
+}
+EOF
+
+cat > "$TMP_DIR/member_missing_field.c" <<'EOF'
+struct S {
+    int x;
+};
+
+int main(void) {
+    struct S s;
+    return s.y;
+}
+EOF
+
+cat > "$TMP_DIR/incomplete_struct_object.c" <<'EOF'
+struct S;
+
+int main(void) {
+    struct S s;
+    return 0;
+}
+EOF
+
+cat > "$TMP_DIR/incomplete_struct_pointer_ok.c" <<'EOF'
+struct S;
+
+int main(void) {
+    struct S *p;
+    return 0;
+}
+EOF
+
 expect_success "$ROOT_DIR/examples/feature_showcase.c"
 expect_output_contains "semantic analysis succeeded"
 expect_output_contains "functions: 2"
@@ -269,4 +339,22 @@ expect_failure "$TMP_DIR/function_to_int_cast.c"
 expect_output_contains "invalid cast from function to int"
 
 expect_success "$TMP_DIR/void_pointer_roundtrip.c"
+expect_output_contains "semantic analysis succeeded"
+
+expect_success "$TMP_DIR/struct_union_ok.c"
+expect_output_contains "semantic analysis succeeded"
+
+expect_failure "$TMP_DIR/member_dot_non_record.c"
+expect_output_contains "operator '.' requires a struct or union operand"
+
+expect_failure "$TMP_DIR/member_arrow_non_pointer.c"
+expect_output_contains "operator '->' requires a pointer to struct or union"
+
+expect_failure "$TMP_DIR/member_missing_field.c"
+expect_output_contains "struct has no member named 'y'"
+
+expect_failure "$TMP_DIR/incomplete_struct_object.c"
+expect_output_contains "variable 's' has incomplete type struct"
+
+expect_success "$TMP_DIR/incomplete_struct_pointer_ok.c"
 expect_output_contains "semantic analysis succeeded"

@@ -18,17 +18,33 @@ typedef enum {
     CC_SEMA_TYPE_FLOAT,
     CC_SEMA_TYPE_DOUBLE,
     CC_SEMA_TYPE_POINTER,
-    CC_SEMA_TYPE_FUNCTION
+    CC_SEMA_TYPE_FUNCTION,
+    CC_SEMA_TYPE_RECORD
 } CCSemaTypeKind;
 
 typedef struct CCSemaType CCSemaType;
+typedef struct CCSemaRecordField CCSemaRecordField;
+
+struct CCSemaRecordField {
+    char *name;
+    const CCSemaType *type;
+    size_t offset;
+    CCSpan span;
+};
 
 struct CCSemaType {
     CCSemaTypeKind kind;
     const CCSemaType *base;
     const CCSemaType **parameters;
     size_t parameter_count;
+    CCSemaRecordField *fields;
+    size_t field_count;
+    char *tag_name;
+    size_t size;
+    size_t alignment;
     bool variadic;
+    bool is_union;
+    bool complete;
 };
 
 typedef enum {
@@ -46,9 +62,18 @@ typedef struct {
 } CCSymbol;
 
 typedef struct {
+    char *name;
+    const CCSemaType *type;
+    CCSpan span;
+} CCTagSymbol;
+
+typedef struct {
     CCSymbol *symbols;
     size_t count;
     size_t capacity;
+    CCTagSymbol *tags;
+    size_t tag_count;
+    size_t tag_capacity;
 } CCScope;
 
 typedef struct {
@@ -503,6 +528,14 @@ static void cc_grow_symbols(CCScope *scope) {
     scope->capacity = new_capacity;
 }
 
+static void cc_grow_tags(CCScope *scope) {
+    size_t new_capacity;
+
+    new_capacity = scope->tag_capacity == 0 ? 4 : scope->tag_capacity * 2;
+    scope->tags = cc_reallocate_or_die(scope->tags, new_capacity * sizeof(*scope->tags));
+    scope->tag_capacity = new_capacity;
+}
+
 static void cc_push_scope(CCSemaContext *context) {
     if (context->scope_count == context->scope_capacity) {
         cc_grow_scopes(context);
@@ -518,11 +551,18 @@ static void cc_free_scope(CCScope *scope) {
     for (index = 0; index < scope->count; index++) {
         free(scope->symbols[index].name);
     }
+    for (index = 0; index < scope->tag_count; index++) {
+        free(scope->tags[index].name);
+    }
 
     free(scope->symbols);
+    free(scope->tags);
     scope->symbols = NULL;
     scope->count = 0;
     scope->capacity = 0;
+    scope->tags = NULL;
+    scope->tag_count = 0;
+    scope->tag_capacity = 0;
 }
 
 static void cc_pop_scope(CCSemaContext *context) {
@@ -570,6 +610,76 @@ static CCSymbol *cc_lookup_symbol_in_scope(CCScope *scope, const char *name) {
     }
 
     return NULL;
+}
+
+static const CCTagSymbol *cc_lookup_tag(const CCSemaContext *context, const char *name) {
+    size_t scope_index;
+
+    if (name == NULL || name[0] == '\0') {
+        return NULL;
+    }
+
+    for (scope_index = context->scope_count; scope_index > 0; scope_index--) {
+        const CCScope *scope;
+        size_t tag_index;
+
+        scope = &context->scopes[scope_index - 1];
+        for (tag_index = 0; tag_index < scope->tag_count; tag_index++) {
+            if (strcmp(scope->tags[tag_index].name, name) == 0) {
+                return &scope->tags[tag_index];
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static CCTagSymbol *cc_lookup_tag_in_scope(CCScope *scope, const char *name) {
+    size_t index;
+
+    if (name == NULL || name[0] == '\0') {
+        return NULL;
+    }
+
+    for (index = 0; index < scope->tag_count; index++) {
+        if (strcmp(scope->tags[index].name, name) == 0) {
+            return &scope->tags[index];
+        }
+    }
+
+    return NULL;
+}
+
+static CCTagSymbol *cc_add_tag_to_current_scope(
+    CCSemaContext *context,
+    const char *name,
+    const CCSemaType *type,
+    CCSpan span
+) {
+    CCScope *scope;
+    CCTagSymbol *existing;
+
+    scope = cc_current_scope(context);
+    if (scope == NULL || name == NULL || name[0] == '\0') {
+        return NULL;
+    }
+
+    existing = cc_lookup_tag_in_scope(scope, name);
+    if (existing != NULL) {
+        existing->type = type;
+        existing->span = span;
+        return existing;
+    }
+
+    if (scope->tag_count == scope->tag_capacity) {
+        cc_grow_tags(scope);
+    }
+
+    scope->tags[scope->tag_count].name = cc_duplicate_string(name);
+    scope->tags[scope->tag_count].type = type;
+    scope->tags[scope->tag_count].span = span;
+    scope->tag_count++;
+    return &scope->tags[scope->tag_count - 1];
 }
 
 static void cc_grow_owned_types(CCSemaContext *context) {
@@ -654,6 +764,102 @@ static const CCSemaType *cc_find_function_type(
     return NULL;
 }
 
+static size_t cc_align_up(size_t value, size_t alignment) {
+    size_t remainder;
+
+    if (alignment <= 1) {
+        return value;
+    }
+
+    remainder = value % alignment;
+    if (remainder == 0) {
+        return value;
+    }
+
+    return value + (alignment - remainder);
+}
+
+static bool cc_type_size_and_alignment(const CCSemaType *type, size_t *size, size_t *alignment) {
+    if (type == NULL) {
+        return false;
+    }
+
+    switch (type->kind) {
+        case CC_SEMA_TYPE_BOOL:
+        case CC_SEMA_TYPE_CHAR:
+            *size = 1;
+            *alignment = 1;
+            return true;
+        case CC_SEMA_TYPE_INT:
+        case CC_SEMA_TYPE_FLOAT:
+            *size = 4;
+            *alignment = 4;
+            return true;
+        case CC_SEMA_TYPE_LONG:
+        case CC_SEMA_TYPE_DOUBLE:
+        case CC_SEMA_TYPE_POINTER:
+            *size = 8;
+            *alignment = 8;
+            return true;
+        case CC_SEMA_TYPE_RECORD:
+            if (!type->complete) {
+                return false;
+            }
+            *size = type->size;
+            *alignment = type->alignment == 0 ? 1 : type->alignment;
+            return true;
+        case CC_SEMA_TYPE_INVALID:
+        case CC_SEMA_TYPE_VOID:
+        case CC_SEMA_TYPE_FUNCTION:
+        default:
+            return false;
+    }
+}
+
+static bool cc_type_is_complete_object(const CCSemaType *type) {
+    size_t size;
+    size_t alignment;
+
+    if (type == NULL || type->kind == CC_SEMA_TYPE_VOID || type->kind == CC_SEMA_TYPE_FUNCTION) {
+        return false;
+    }
+
+    return cc_type_size_and_alignment(type, &size, &alignment);
+}
+
+static CCSemaType *cc_new_record_type(CCSemaContext *context, bool is_union, const char *tag_name, bool complete) {
+    CCSemaType *type;
+
+    type = cc_reallocate_or_die(NULL, sizeof(*type));
+    memset(type, 0, sizeof(*type));
+    type->kind = CC_SEMA_TYPE_RECORD;
+    type->tag_name = tag_name == NULL ? NULL : cc_duplicate_string(tag_name);
+    type->size = 0;
+    type->alignment = 1;
+    type->is_union = is_union;
+    type->complete = complete;
+    return (CCSemaType *)cc_take_owned_type(context, type);
+}
+
+static const CCSemaRecordField *cc_find_record_field(const CCSemaType *record_type, const char *name) {
+    size_t index;
+
+    if (record_type == NULL
+        || record_type->kind != CC_SEMA_TYPE_RECORD
+        || !record_type->complete
+        || name == NULL) {
+        return NULL;
+    }
+
+    for (index = 0; index < record_type->field_count; index++) {
+        if (strcmp(record_type->fields[index].name, name) == 0) {
+            return &record_type->fields[index];
+        }
+    }
+
+    return NULL;
+}
+
 static const CCSemaType *cc_new_pointer_type(CCSemaContext *context, const CCSemaType *base) {
     CCSemaType *type;
     const CCSemaType *existing;
@@ -668,7 +874,14 @@ static const CCSemaType *cc_new_pointer_type(CCSemaContext *context, const CCSem
     type->base = base;
     type->parameters = NULL;
     type->parameter_count = 0;
+    type->fields = NULL;
+    type->field_count = 0;
+    type->tag_name = NULL;
+    type->size = 0;
+    type->alignment = 0;
     type->variadic = false;
+    type->is_union = false;
+    type->complete = true;
     return cc_take_owned_type(context, type);
 }
 
@@ -701,7 +914,14 @@ static const CCSemaType *cc_new_function_type(
 
     type->parameters = owned_parameters;
     type->parameter_count = parameter_count;
+    type->fields = NULL;
+    type->field_count = 0;
+    type->tag_name = NULL;
+    type->size = 0;
+    type->alignment = 0;
     type->variadic = variadic;
+    type->is_union = false;
+    type->complete = true;
     return cc_take_owned_type(context, type);
 }
 
@@ -729,6 +949,8 @@ static const char *cc_type_name(const CCSemaType *type) {
             return "pointer";
         case CC_SEMA_TYPE_FUNCTION:
             return "function";
+        case CC_SEMA_TYPE_RECORD:
+            return type->is_union ? "union" : "struct";
         case CC_SEMA_TYPE_INVALID:
         default:
             return "<invalid>";
@@ -762,6 +984,8 @@ static bool cc_type_equal(const CCSemaType *left, const CCSemaType *right) {
                 }
             }
             return true;
+        case CC_SEMA_TYPE_RECORD:
+            return false;
         default:
             return true;
     }
@@ -919,6 +1143,224 @@ static bool cc_specifiers_contain_text(const CCAstNode *specifiers, const char *
     return false;
 }
 
+static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const CCAstNode *specifiers);
+static const CCSemaType *cc_apply_declarator_type(
+    CCSemaContext *context,
+    const CCAstNode *declarator,
+    const CCSemaType *base_type
+);
+static const CCAstNode *cc_declaration_specifiers(const CCAstNode *declaration);
+static const CCAstNode *cc_init_declarator_declarator(const CCAstNode *init_declarator);
+static const CCAstNode *cc_init_declarator_initializer(const CCAstNode *init_declarator);
+
+static const CCAstNode *cc_record_specifier_tag(const CCAstNode *specifier) {
+    if (specifier != NULL
+        && specifier->child_count > 0
+        && specifier->children[0]->kind == CC_AST_IDENTIFIER) {
+        return specifier->children[0];
+    }
+
+    return NULL;
+}
+
+static size_t cc_record_specifier_field_start(const CCAstNode *specifier) {
+    return cc_record_specifier_tag(specifier) != NULL ? 1 : 0;
+}
+
+static bool cc_record_has_definition(const CCAstNode *specifier) {
+    return specifier != NULL && specifier->child_count > cc_record_specifier_field_start(specifier);
+}
+
+static const CCSemaType *cc_resolve_record_specifier(CCSemaContext *context, const CCAstNode *specifier) {
+    const CCAstNode *tag_node;
+    const char *tag_name;
+    bool is_union;
+    bool has_definition;
+    CCScope *scope;
+    CCTagSymbol *current_tag;
+    const CCTagSymbol *existing_tag;
+    const CCSemaType *record_type;
+    CCSemaType *mutable_record_type;
+    CCSemaRecordField *fields;
+    size_t field_count;
+    size_t field_capacity;
+    size_t layout_size;
+    size_t layout_alignment;
+    size_t field_index;
+
+    if (specifier == NULL || specifier->kind != CC_AST_RECORD_SPECIFIER) {
+        return &cc_invalid_type;
+    }
+
+    is_union = specifier->text != NULL && strcmp(specifier->text, "union") == 0;
+    tag_node = cc_record_specifier_tag(specifier);
+    tag_name = tag_node != NULL ? tag_node->text : NULL;
+    has_definition = cc_record_has_definition(specifier);
+    scope = cc_current_scope(context);
+    current_tag = scope != NULL ? cc_lookup_tag_in_scope(scope, tag_name) : NULL;
+    existing_tag = current_tag == NULL && tag_name != NULL ? cc_lookup_tag(context, tag_name) : NULL;
+
+    record_type = NULL;
+    if (current_tag != NULL) {
+        record_type = current_tag->type;
+    } else if (!has_definition && existing_tag != NULL) {
+        record_type = existing_tag->type;
+    }
+
+    if (record_type != NULL && (record_type->kind != CC_SEMA_TYPE_RECORD || record_type->is_union != is_union)) {
+        cc_add_diagnostic(
+            context,
+            specifier->span,
+            "tag '%s' was previously declared as a different kind of record",
+            tag_name == NULL ? "<anonymous>" : tag_name
+        );
+        return &cc_invalid_type;
+    }
+
+    if (record_type == NULL) {
+        record_type = cc_new_record_type(context, is_union, tag_name, false);
+        if (tag_name != NULL) {
+            cc_add_tag_to_current_scope(context, tag_name, record_type, specifier->span);
+        }
+    }
+
+    if (!has_definition) {
+        return record_type;
+    }
+
+    mutable_record_type = (CCSemaType *)record_type;
+    if (mutable_record_type->complete) {
+        cc_add_diagnostic(
+            context,
+            specifier->span,
+            "redefinition of %s '%s'",
+            is_union ? "union" : "struct",
+            tag_name == NULL ? "<anonymous>" : tag_name
+        );
+        return record_type;
+    }
+
+    fields = NULL;
+    field_count = 0;
+    field_capacity = 0;
+    layout_size = 0;
+    layout_alignment = 1;
+
+    for (field_index = cc_record_specifier_field_start(specifier); field_index < specifier->child_count; field_index++) {
+        const CCAstNode *field_declaration;
+        const CCAstNode *field_specifiers;
+        const CCSemaType *field_base_type;
+        size_t declarator_index;
+
+        field_declaration = specifier->children[field_index];
+        if (field_declaration->kind != CC_AST_DECLARATION) {
+            continue;
+        }
+
+        field_specifiers = cc_declaration_specifiers(field_declaration);
+        field_base_type = cc_type_from_specifiers(context, field_specifiers);
+
+        for (declarator_index = 1; declarator_index < field_declaration->child_count; declarator_index++) {
+            const CCAstNode *init_declarator;
+            const CCAstNode *declarator;
+            const CCAstNode *initializer;
+            const CCSemaType *field_type;
+            const char *field_name;
+            size_t field_size;
+            size_t field_alignment;
+            size_t existing_index;
+            bool duplicate;
+            size_t field_offset;
+
+            init_declarator = field_declaration->children[declarator_index];
+            if (init_declarator->kind != CC_AST_INIT_DECLARATOR) {
+                continue;
+            }
+
+            declarator = cc_init_declarator_declarator(init_declarator);
+            initializer = cc_init_declarator_initializer(init_declarator);
+            if (declarator == NULL) {
+                continue;
+            }
+
+            if (initializer != NULL) {
+                cc_add_diagnostic(context, initializer->span, "struct/union fields cannot have initializers");
+            }
+
+            field_type = cc_apply_declarator_type(context, declarator, field_base_type);
+            field_name = declarator->text;
+            if (field_name == NULL || field_name[0] == '\0') {
+                cc_add_diagnostic(context, declarator->span, "struct/union fields must be named");
+                continue;
+            }
+
+            if (field_type->kind == CC_SEMA_TYPE_FUNCTION) {
+                cc_add_diagnostic(context, declarator->span, "field '%s' cannot have function type", field_name);
+                continue;
+            }
+
+            if (!cc_type_is_complete_object(field_type)) {
+                cc_add_diagnostic(context, declarator->span, "field '%s' has incomplete type", field_name);
+                continue;
+            }
+
+            if (!cc_type_size_and_alignment(field_type, &field_size, &field_alignment)) {
+                cc_add_diagnostic(context, declarator->span, "unable to determine layout for field '%s'", field_name);
+                continue;
+            }
+
+            duplicate = false;
+            for (existing_index = 0; existing_index < field_count; existing_index++) {
+                if (strcmp(fields[existing_index].name, field_name) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                cc_add_diagnostic(context, declarator->span, "duplicate field '%s' in %s", field_name, cc_type_name(record_type));
+                continue;
+            }
+
+            if (field_count == field_capacity) {
+                size_t new_capacity;
+
+                new_capacity = field_capacity == 0 ? 4 : field_capacity * 2;
+                fields = cc_reallocate_or_die(fields, new_capacity * sizeof(*fields));
+                field_capacity = new_capacity;
+            }
+
+            field_offset = is_union ? 0 : cc_align_up(layout_size, field_alignment);
+            if (is_union) {
+                if (field_size > layout_size) {
+                    layout_size = field_size;
+                }
+            } else {
+                layout_size = field_offset + field_size;
+            }
+            if (field_alignment > layout_alignment) {
+                layout_alignment = field_alignment;
+            }
+
+            fields[field_count].name = cc_duplicate_string(field_name);
+            fields[field_count].type = field_type;
+            fields[field_count].offset = field_offset;
+            fields[field_count].span = declarator->span;
+            field_count++;
+        }
+    }
+
+    if (field_count == 0) {
+        cc_add_diagnostic(context, specifier->span, "%s definitions must declare at least one field", cc_type_name(record_type));
+    }
+
+    mutable_record_type->fields = fields;
+    mutable_record_type->field_count = field_count;
+    mutable_record_type->alignment = layout_alignment;
+    mutable_record_type->size = cc_align_up(layout_size, layout_alignment);
+    mutable_record_type->complete = true;
+    return record_type;
+}
+
 static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const CCAstNode *specifiers) {
     bool saw_void;
     bool saw_bool;
@@ -927,6 +1369,7 @@ static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const C
     bool saw_long;
     bool saw_float;
     bool saw_double;
+    const CCSemaType *record_type;
     const CCSemaType *typedef_type;
     size_t index;
 
@@ -937,6 +1380,7 @@ static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const C
     saw_long = false;
     saw_float = false;
     saw_double = false;
+    record_type = NULL;
     typedef_type = NULL;
 
     if (specifiers == NULL) {
@@ -948,6 +1392,10 @@ static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const C
         const CCSymbol *symbol;
 
         child = specifiers->children[index];
+        if (child->kind == CC_AST_RECORD_SPECIFIER) {
+            record_type = cc_resolve_record_specifier(context, child);
+            continue;
+        }
         if (child->text == NULL) {
             continue;
         }
@@ -985,6 +1433,14 @@ static const CCSemaType *cc_type_from_specifiers(CCSemaContext *context, const C
         if (symbol != NULL && symbol->kind == CC_SYMBOL_TYPEDEF) {
             typedef_type = symbol->type;
         }
+    }
+
+    if (record_type != NULL) {
+        if (typedef_type != NULL || saw_void || saw_bool || saw_char || saw_int || saw_long || saw_float || saw_double) {
+            cc_add_diagnostic(context, specifiers->span, "conflicting type specifiers");
+            return &cc_invalid_type;
+        }
+        return record_type;
     }
 
     if (typedef_type != NULL) {
@@ -1766,6 +2222,31 @@ static CCSemaExpr cc_analyze_unary_expression(CCSemaContext *context, const CCAs
     }
 
     if (strcmp(operator_text, "kw_sizeof") == 0 || strcmp(operator_text, "kw__Alignof") == 0) {
+        const CCAstNode *operand_node;
+        const CCSemaType *operand_type;
+        size_t size;
+        size_t alignment;
+
+        if (node->child_count == 0) {
+            return cc_invalid_expr();
+        }
+
+        operand_node = node->children[0];
+        if (operand_node->kind == CC_AST_TYPE_NAME) {
+            operand_type = cc_type_from_parameter(context, operand_node);
+        } else {
+            operand = cc_analyze_expression(context, operand_node);
+            if (!operand.ok) {
+                return cc_invalid_expr();
+            }
+            operand_type = operand.type;
+        }
+
+        if (!cc_type_size_and_alignment(operand_type, &size, &alignment)) {
+            cc_add_diagnostic(context, node->span, "%s requires a complete object type", operator_text);
+            return cc_invalid_expr();
+        }
+
         return cc_make_expr(&cc_long_type, false, false);
     }
 
@@ -1992,10 +2473,61 @@ static CCSemaExpr cc_analyze_expression(CCSemaContext *context, const CCAstNode 
             return cc_make_expr(base.type->base, true, false);
         }
         case CC_AST_MEMBER_EXPRESSION:
-            if (node->child_count > 0) {
-                (void)cc_analyze_expression(context, node->children[0]);
+            if (node->child_count < 2) {
+                return cc_invalid_expr();
             }
-            return cc_make_expr(&cc_int_type, true, false);
+            {
+                CCSemaExpr base;
+                const CCSemaType *record_type;
+                const CCAstNode *member_name_node;
+                const CCSemaRecordField *field;
+                bool result_is_lvalue;
+                bool use_arrow;
+
+                base = cc_analyze_expression(context, node->children[0]);
+                if (!base.ok) {
+                    return cc_invalid_expr();
+                }
+
+                use_arrow = node->text != NULL && strcmp(node->text, "->") == 0;
+                if (use_arrow) {
+                    if (!cc_type_is_pointer(base.type)
+                        || base.type->base == NULL
+                        || base.type->base->kind != CC_SEMA_TYPE_RECORD) {
+                        cc_add_diagnostic(context, node->span, "operator '->' requires a pointer to struct or union");
+                        return cc_invalid_expr();
+                    }
+                    record_type = base.type->base;
+                    result_is_lvalue = true;
+                } else {
+                    if (base.type == NULL || base.type->kind != CC_SEMA_TYPE_RECORD) {
+                        cc_add_diagnostic(context, node->span, "operator '.' requires a struct or union operand");
+                        return cc_invalid_expr();
+                    }
+                    record_type = base.type;
+                    result_is_lvalue = base.is_lvalue;
+                }
+
+                if (!record_type->complete) {
+                    cc_add_diagnostic(context, node->span, "member access into incomplete %s type", cc_type_name(record_type));
+                    return cc_invalid_expr();
+                }
+
+                member_name_node = node->children[1];
+                field = cc_find_record_field(record_type, member_name_node->text);
+                if (field == NULL) {
+                    cc_add_diagnostic(
+                        context,
+                        member_name_node->span,
+                        "%s has no member named '%s'",
+                        cc_type_name(record_type),
+                        member_name_node->text == NULL ? "<unnamed>" : member_name_node->text
+                    );
+                    return cc_invalid_expr();
+                }
+
+                return cc_make_expr(field->type, result_is_lvalue, false);
+            }
         case CC_AST_CAST_EXPRESSION:
             if (node->child_count < 2) {
                 return cc_invalid_expr();
@@ -2376,6 +2908,16 @@ static void cc_visit_declaration(CCSemaContext *context, const CCAstNode *declar
             ? CC_SYMBOL_FUNCTION
             : CC_SYMBOL_OBJECT;
 
+        if (symbol_kind == CC_SYMBOL_OBJECT && !cc_type_is_complete_object(declared_type)) {
+            cc_add_diagnostic(
+                context,
+                declarator->span,
+                "variable '%s' has incomplete type %s",
+                name == NULL ? "<unnamed>" : name,
+                cc_type_name(declared_type)
+            );
+        }
+
         cc_add_symbol_to_current_scope(
             context,
             name,
@@ -2548,7 +3090,14 @@ void cc_sema_check_translation_unit(
     cc_clear_switch_records(&context);
 
     for (index = 0; index < context.owned_type_count; index++) {
+        size_t field_index;
+
+        for (field_index = 0; field_index < context.owned_types[index]->field_count; field_index++) {
+            free(context.owned_types[index]->fields[field_index].name);
+        }
+        free(context.owned_types[index]->fields);
         free((void *)context.owned_types[index]->parameters);
+        free(context.owned_types[index]->tag_name);
         free(context.owned_types[index]);
     }
     free(context.owned_types);

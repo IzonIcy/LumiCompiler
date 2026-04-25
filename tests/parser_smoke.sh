@@ -93,6 +93,27 @@ entry:
 }
 EOF
 
+cat > "$TMP_DIR/struct_union_parse.c" <<'EOF'
+struct Pair {
+    int x;
+    int y;
+};
+
+union Number {
+    int i;
+    double d;
+};
+
+int main(void) {
+    struct Pair p;
+    struct Pair *pp = &p;
+    union Number n;
+    pp->x = 1;
+    n.i = p.y;
+    return pp->x + n.i;
+}
+EOF
+
 expect_parse_success "$ROOT_DIR/examples/feature_showcase.c"
 expect_output_contains "translation_unit"
 expect_output_contains "preprocessor_line: #define GLUE(a, b) a ## b"
@@ -114,6 +135,12 @@ expect_output_contains "case_statement"
 expect_output_contains "default_statement"
 expect_output_contains "goto_statement: entry"
 expect_output_contains "label_statement: entry"
+
+expect_parse_success "$TMP_DIR/struct_union_parse.c"
+expect_output_contains "record_specifier: struct"
+expect_output_contains "record_specifier: union"
+expect_output_contains "member_expression: ->"
+expect_output_contains "member_expression: ."
 
 expect_parse_success "$TMP_DIR/typedef_name_as_local_identifier.c"
 expect_output_contains "declarator: T"

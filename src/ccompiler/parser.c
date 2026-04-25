@@ -38,6 +38,7 @@ static const char *const cc_ast_kind_names[] = {
     [CC_AST_DECLARATION] = "declaration",
     [CC_AST_DECLARATION_SPECIFIERS] = "declaration_specifiers",
     [CC_AST_SPECIFIER] = "specifier",
+    [CC_AST_RECORD_SPECIFIER] = "record_specifier",
     [CC_AST_INIT_DECLARATOR] = "init_declarator",
     [CC_AST_DECLARATOR] = "declarator",
     [CC_AST_POINTER] = "pointer",
@@ -580,7 +581,53 @@ static CCAstNode *cc_parse_statement(CCParser *parser);
 static CCAstNode *cc_parse_declaration(CCParser *parser);
 static CCParsedDeclarator cc_parse_declarator(CCParser *parser, bool allow_abstract);
 
-static CCAstNode *cc_parse_struct_union_enum_specifier(CCParser *parser) {
+static CCAstNode *cc_parse_record_specifier(CCParser *parser) {
+    CCSpan start;
+    CCTokenKind kind;
+    CCAstNode *node;
+    bool has_tag;
+
+    start = cc_current_span(parser);
+    kind = cc_current_token(parser)->kind;
+    node = cc_new_ast_node(
+        CC_AST_RECORD_SPECIFIER,
+        start,
+        kind == CC_TOKEN_KW_STRUCT ? "struct" : "union"
+    );
+    cc_advance(parser);
+
+    has_tag = false;
+    if (cc_at(parser, CC_TOKEN_IDENTIFIER)) {
+        cc_ast_add_child(node, cc_new_token_node(parser, CC_AST_IDENTIFIER, cc_current_token(parser)));
+        cc_advance(parser);
+        has_tag = true;
+    }
+
+    if (cc_match(parser, CC_TOKEN_LBRACE)) {
+        cc_push_typedef_scope(parser);
+        while (!cc_at(parser, CC_TOKEN_RBRACE) && !cc_at(parser, CC_TOKEN_EOF)) {
+            CCAstNode *field_declaration;
+
+            field_declaration = cc_parse_declaration(parser);
+            if (field_declaration == NULL) {
+                cc_synchronize_to_semicolon_or_brace(parser);
+                continue;
+            }
+
+            cc_ast_add_child(node, field_declaration);
+        }
+        cc_pop_typedef_scope(parser);
+
+        cc_expect(parser, CC_TOKEN_RBRACE, "expected '}' after struct/union definition");
+    } else if (!has_tag) {
+        cc_expected(parser, "expected tag name or '{' after struct/union keyword");
+    }
+
+    node->span = cc_span_from_start_to_previous(parser, start);
+    return node;
+}
+
+static CCAstNode *cc_parse_enum_specifier(CCParser *parser) {
     CCSpan start;
     const char *kind_name;
     char *text;
@@ -649,8 +696,10 @@ static CCParsedSpecifiers cc_parse_declaration_specifiers(CCParser *parser, bool
             parsed.is_typedef = true;
         }
 
-        if (token->kind == CC_TOKEN_KW_STRUCT || token->kind == CC_TOKEN_KW_UNION || token->kind == CC_TOKEN_KW_ENUM) {
-            child = cc_parse_struct_union_enum_specifier(parser);
+        if (token->kind == CC_TOKEN_KW_STRUCT || token->kind == CC_TOKEN_KW_UNION) {
+            child = cc_parse_record_specifier(parser);
+        } else if (token->kind == CC_TOKEN_KW_ENUM) {
+            child = cc_parse_enum_specifier(parser);
         } else {
             child = cc_new_token_node(parser, CC_AST_SPECIFIER, token);
             cc_advance(parser);
@@ -1208,6 +1257,8 @@ static CCAstNode *cc_parse_cast_expression(CCParser *parser) {
         cc_expect(parser, CC_TOKEN_RPAREN, "expected ')' after cast type");
         operand = cc_parse_cast_expression(parser);
         if (type_name == NULL || operand == NULL) {
+            cc_free_ast(type_name);
+            cc_free_ast(operand);
             return NULL;
         }
 
@@ -1822,6 +1873,15 @@ static CCAstNode *cc_parse_external_declaration(CCParser *parser) {
     if (!specifiers.has_any) {
         cc_free_ast(specifiers.node);
         return NULL;
+    }
+
+    if (cc_match(parser, CC_TOKEN_SEMICOLON)) {
+        CCAstNode *declaration;
+
+        declaration = cc_new_ast_node(CC_AST_DECLARATION, specifiers.node->span, NULL);
+        cc_ast_add_child(declaration, specifiers.node);
+        declaration->span = cc_span_from_start_to_previous(parser, specifiers.node->span);
+        return declaration;
     }
 
     declarator = cc_parse_declarator(parser, false);

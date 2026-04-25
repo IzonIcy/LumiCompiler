@@ -50,6 +50,7 @@ The parser handles a meaningful C subset, including:
 - if, for, while, do ... while, and switch
 - case, default, return, break, and continue
 - unary, binary, conditional, cast, call, member, and subscript expressions
+- struct and union definitions with field declarations
 
 ### Semantic Analysis
 
@@ -61,6 +62,7 @@ The semantic pass performs:
 - undeclared identifier checks
 - function-call arity checks
 - assignment and return-type validation
+- struct/union tag resolution, field layout/alignment, and member-access validation for . and ->
 - break, continue, case, and default validation
 - label resolution for goto
 - duplicate label, case, and default detection
@@ -197,4 +199,4 @@ Some notable limits:
 - the preprocessor still focuses on local include resolution and common macro flows
 - semantic typing is intentionally lightweight
 - the backend emits textual IR, not object code or machine assembly
-- advanced C constructs like full struct layout and function pointers are not complete yet
+- advanced C constructs like bit-fields, flexible array members, and full function-pointer coverage are not complete yet
