@@ -597,9 +597,7 @@ static int cc_run_codegen(const char *path) {
         cc_print_diagnostics(stderr, &parse_result.source, codegen_result.diagnostics.items, codegen_result.diagnostics.count);
         exit_code = 1;
     } else {
-        if (g_options.dump_ir) {
-            fputs(codegen_result.text, stdout);
-        }
+        fputs(codegen_result.text, stdout);
         exit_code = 0;
     }
 
