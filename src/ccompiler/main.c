@@ -424,7 +424,7 @@ static int cc_run_parse(const char *path) {
         if (g_options.dump_ast_json) {
             cc_ast_print_json(stdout, parse_result.translation_unit, 0);
             fputc('\n', stdout);
-        } else if (g_options.dump_ast) {
+        } else {
             cc_ast_print(stdout, parse_result.translation_unit, 0);
         }
         exit_code = 0;
