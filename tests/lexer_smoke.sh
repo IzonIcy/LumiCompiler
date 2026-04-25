@@ -16,7 +16,7 @@ trap cleanup EXIT INT TERM
 expect_success() {
     input_file=$1
 
-    if ! "$BINARY" lex "$input_file" >"$LAST_OUTPUT" 2>&1; then
+    if ! "$BINARY" --dump-tokens lex "$input_file" >"$LAST_OUTPUT" 2>&1; then
         echo "expected success for $input_file" >&2
         cat "$LAST_OUTPUT" >&2
         exit 1
